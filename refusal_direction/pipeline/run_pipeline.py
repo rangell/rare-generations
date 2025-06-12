@@ -79,8 +79,6 @@ def select_and_save_direction(cfg, model_base, harmful_val, harmless_val, candid
     if not os.path.exists(os.path.join(cfg.artifact_path(), 'select_direction')):
         os.makedirs(os.path.join(cfg.artifact_path(), 'select_direction'))
 
-    from IPython import embed; embed(); exit()
-
     pos, layer, direction = select_direction(
         model_base,
         harmful_val,
@@ -158,7 +156,7 @@ def run_pipeline(model_path):
     ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(model_base, direction)
     actadd_fwd_pre_hooks, actadd_fwd_hooks = [(model_base.model_block_modules[layer], get_activation_addition_input_pre_hook(vector=direction, coeff=-1.0))], []
 
-    from IPython import embed; embed(); exit()
+    exit()
 
     # 3a. Generate and save completions on harmful evaluation datasets
     for dataset_name in cfg.evaluation_datasets:

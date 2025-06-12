@@ -230,8 +230,11 @@ def generate(
 
 if __name__ == "__main__":
 
-    model_name_or_path = "meta-llama/Llama-3.2-1B-Instruct"
-    refusal_direction_path = "refusal_direction/pipeline/runs/Llama-3.2-1B-Instruct/"
+    #model_name_or_path = "meta-llama/Llama-3.2-1B-Instruct"
+    #refusal_direction_path = "refusal_direction/pipeline/runs/Llama-3.2-1B-Instruct/"
+
+    model_name_or_path = "meta-llama/Meta-Llama-3-8B-Instruct"
+    refusal_direction_path = "refusal_direction/pipeline/runs/Meta-Llama-3-8B-Instruct/"
 
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(model_name_or_path)
