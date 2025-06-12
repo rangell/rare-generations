@@ -5,7 +5,7 @@ import torch
 from datasets import load_dataset
 from vllm import LLM, SamplingParams
 
-from utils import expand_shortcut_model_name
+# from utils import expand_shortcut_model_name
 
 
 if __name__ == '__main__':
@@ -42,7 +42,8 @@ if __name__ == '__main__':
     sampling_params = SamplingParams(temperature=args.temperature, max_tokens=args.max_new_tokens, n=min(args.num_return_sequences, 100))
 
     # load the model
-    model_name_or_path = expand_shortcut_model_name(args.target_model)
+    # model_name_or_path = expand_shortcut_model_name(args.target_model)
+    model_name_or_path = 'meta-llama/Meta-Llama-3-8B'
     if isinstance(model_name_or_path, tuple):
         llm = LLM(model=model_name_or_path[0], tokenizer=model_name_or_path[1], dtype=torch.bfloat16)
     else:
