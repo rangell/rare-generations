@@ -12,6 +12,7 @@ from refusal_direction.pipeline.utils.hook_utils import (
     get_direction_ablation_input_pre_hook,
     get_direction_ablation_output_hook,
 )
+from fk_steering import FKSteering
 
 
 def load_model_and_tokenizer(model_name_or_path):
@@ -146,6 +147,7 @@ def generate(
     fwd_pre_hooks=[],
     fwd_hooks=[],
     max_new_tokens: int = 10,
+    use_smc: bool = True,
     decoding: str = "sample",  # Options: 'greedy', 'sample', 'beam_search', 'top_k', 'top_p'
     proposal_model="toxic_model",  # Options: 'base', 'toxic_model'
 ):
@@ -156,10 +158,23 @@ def generate(
     _input_ids = input_ids.detach().clone()
     _attention_mask = attention_mask.detach().clone()
 
+    max_seq_len = max_new_tokens + _input_ids.shape[1]
+    fk_class = FKSteering(
+        device=model.device,
+        r_fn=lambda x: torch.ones(x.shape[0], device=model.device),
+        potential_type="diff",
+        max_seq_len=max_new_tokens,
+        num_particles=num_particles,
+        resample_start=10,
+        resample_end=max_new_tokens - 10,
+        resample_interval=20,
+        lmbda=1,
+        use_smc=use_smc,
+    )
     # Main generation loop
     importance_weights = torch.ones(num_particles, 1, device=_input_ids.device)
     importance_weight_arr = []
-    for _ in range(max_new_tokens):
+    for sample_idx in range(max_new_tokens):
 
         proposal_output = proposal_generator(
             _input_ids=_input_ids,
@@ -225,7 +240,6 @@ def generate(
         importance_weights = importance_weights * torch.exp(
             base_logprobs - proposal_logprobs
         )
-        importance_weight_arr.append(base_logprobs - proposal_logprobs)
         assert torch.all(
             importance_weights >= 0
         ), "Importance weights should be non-negative."
@@ -241,13 +255,30 @@ def generate(
             (_attention_mask, torch.ones_like(next_tokens)), dim=1
         )
 
+        _input_ids, indices = fk_class(
+            sample_idx=sample_idx,
+            sequences=_input_ids,
+            importance_weights=importance_weights,
+        )
+
+        # change the input_ids and attention_mask to only include the resampled sequences
+        _attention_mask = _attention_mask[indices]
+        # update importance_weight_arr to only include the resampled sequences
+        for past_idx in range(len(importance_weight_arr)):
+            importance_weight_arr[past_idx] = importance_weight_arr[past_idx][indices]
+                
+        importance_weight_arr.append((base_logprobs - proposal_logprobs)[indices])
+
     importance_weight_arr = torch.exp(torch.cat(importance_weight_arr, dim=1))
     assert importance_weight_arr.shape == (num_particles, max_new_tokens), (
         importance_weight_arr.shape,
         num_particles,
         max_new_tokens,
     )
-
+    # SMC estimate 
+    fk_estimate = fk_class.compute_fk_estimate(torch.ones(num_particles, device=model.device))
+    print(f"FK estimate: {fk_estimate}")
+    
     print(
         f"Final importance weights: {importance_weights.mean(), importance_weights.std()}"
     )
@@ -317,7 +348,7 @@ if __name__ == "__main__":
     model.eval()
     # NOTE: This is important to avoid OOM errors
 
-    max_new_tokens = 20
+    max_new_tokens = 100
 
     # Generate
     outputs = generate(
