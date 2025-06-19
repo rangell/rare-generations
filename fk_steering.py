@@ -16,15 +16,19 @@ class FKSteering:
         resample_end,
         resample_interval,
         lmbda,
-        use_smc,        
-    ):  
+        use_smc,
+        adaptive_resampling: Optional[bool] = True,
+        adaptive_resampling_threshold: Optional[float] = 0.5,
+    ):
         self.use_smc = use_smc
-        
+
         self.device = device
         self.r_fn = r_fn
         self.lmbda = lmbda
 
         self.num_particles = num_particles
+        self.adaptive_resampling = adaptive_resampling
+        self.adaptive_resampling_threshold = adaptive_resampling_threshold
 
         self.resample_start = resample_start
         self.resample_end = resample_end
@@ -41,8 +45,14 @@ class FKSteering:
         self.potential_type = potential_type
         assert potential_type in ["r_fn", "max", "diff", "bon"], potential_type
 
-        self.arr_r_values = [torch.zeros(num_particles, device=device)]
+        self.arr_r_values = [torch.ones(num_particles, device=device)]
         self.arr_potential_values = []
+
+        # partial p(x_t, ...,x_{t+r} | x_{1:t}) / q(x_t, ...,x_{t+r} | x_{1:t}
+        self.accum_importance_weights = torch.ones(num_particles, device=device)
+
+        # complete p(x_t, ...,x_{t+r} | x_{1:t}) / q(x_t, ...,x_{t+r} | x_{1:t}
+        self.arr_importance_weights = torch.ones(num_particles, device=device)
 
     def resampling_fn(self, w):
         """
@@ -60,16 +70,29 @@ class FKSteering:
         normalized_w = w / torch.sum(w)
         ess = 1.0 / torch.sum(torch.pow(normalized_w, 2)).item()
 
-        if ess < 0.5 * num_particles:
-            print("Resampling triggered due to low ESS:", ess)
+        if self.adaptive_resampling:
+            if ess < self.adaptive_resampling_threshold * num_particles:
+                print("Resampling triggered due to low ESS:", ess)
+                # print('normalized_w:', normalized_w)
+                
+                indices = np.random.choice(
+                    num_particles, size=num_particles, p=normalized_w.cpu().numpy()
+                )
+
+            else:
+                indices = np.arange(num_particles)
+        else:
+            # If adaptive resampling is not used, always resample
+            # This is a fallback to ensure resampling occurs
+            print("Adaptive resampling is disabled, resampling will always occur.")
             indices = np.random.choice(
                 num_particles, size=num_particles, p=normalized_w.cpu().numpy()
             )
-        else:
-            indices = np.arange(num_particles)
-        # indices = torch.tensor(indices, dtype=torch.long, device=self.device)
 
         return indices
+    
+    def stratified_resampling_fn(self, w):
+        pass
 
     def compute_potential(self, sample_idx, sequence, rs_candidates):
         if self.potential_type == "r_fn":
@@ -79,7 +102,7 @@ class FKSteering:
         elif self.potential_type == "diff":
             rs_old = self.arr_r_values[-1]
             return torch.exp(self.lmbda * (rs_candidates - rs_old))
-        
+
         elif self.potential_type == "bon":
             if sample_idx == 0:
                 return torch.ones_like(rs_candidates)
@@ -87,25 +110,47 @@ class FKSteering:
             raise ValueError(f"Unknown potential type: {self.potential_type}")
 
     def update_history(self, indices, arr_r_values, arr_potential_values):
-        for past_idx in range(len(arr_potential_values)):
+        for past_idx in range(len(arr_r_values)):
             arr_r_values[past_idx] = arr_r_values[past_idx][indices]
+
+        for past_idx in range(len(arr_potential_values)):
             arr_potential_values[past_idx] = arr_potential_values[past_idx][indices]
 
         return arr_r_values, arr_potential_values
 
     def __call__(self, sample_idx, sequences, importance_weights):
-        # print("resampling call")
+
+        # collect product of importance_weights
+        self.accum_importance_weights = (
+            self.accum_importance_weights * importance_weights.view(self.num_particles)
+        )
+
         if sample_idx not in self.resampling_arr or not self.use_smc:
+            # If not resampling, just append one as potential values
+            self.arr_potential_values.append(
+                torch.ones(self.num_particles, device=self.device)
+            )
+
+            # If not resampling, just return the sequences and indices
             return sequences, torch.arange(self.num_particles, device=self.device)
+
+        # # change importance_weights to accumulated weights
+        # importance_weights = self.accum_importance_weights
 
         rs_candidates = self.r_fn(sequences)
         assert rs_candidates.shape == (self.num_particles,), rs_candidates.shape
 
         potential_values = self.compute_potential(sample_idx, sequences, rs_candidates)
-        potential_values = potential_values * importance_weights.view(self.num_particles)
         assert potential_values.shape == (self.num_particles,), potential_values.shape
-      
-        normalized_potential = potential_values / torch.sum(potential_values)
+
+        # Normalize potential values to get probabilities
+        potential_importance_weighted = (
+            potential_values * self.accum_importance_weights.view(self.num_particles)
+        )
+
+        normalized_potential = potential_importance_weighted / torch.sum(
+            potential_importance_weighted
+        )
         assert normalized_potential.shape == (self.num_particles,), (
             normalized_potential.shape,
             importance_weights.shape,
@@ -118,7 +163,7 @@ class FKSteering:
         resampled_sequence = sequences[indices]
 
         assert resampled_sequence.shape == (
-            self.num_particles,
+            num_particles,
             seq_len,
         ), (resampled_sequence.shape, self.num_particles, seq_len)
 
@@ -128,40 +173,79 @@ class FKSteering:
             arr_r_values=self.arr_r_values,
             arr_potential_values=self.arr_potential_values,
         )
-        
+
         self.arr_r_values = arr_r_values
         self.arr_potential_values = arr_potential_values
-        
+        self.arr_importance_weights = self.arr_importance_weights[indices]
+
         self.arr_r_values.append(rs_candidates[indices])
         self.arr_potential_values.append(potential_values[indices])
 
+        self.arr_importance_weights = (
+            self.arr_importance_weights * self.accum_importance_weights[indices]
+        )
+        assert self.arr_importance_weights.shape == (
+            self.num_particles,
+        ), self.arr_importance_weights.shape
+
+        # Update accumulated importance weights
+        self.accum_importance_weights = torch.ones(
+            self.num_particles, device=self.device
+        )
+
         return resampled_sequence, indices
 
-    def compute_fk_estimate(self, test_function_values):
+    def compute_fk_estimate(self, test_function_values, importance_weight_arr):
         assert (
             self.potential_type == "diff"
         ), "FK estimate only available for 'diff' potential type"
 
-        r_0 = self.arr_r_values[0]
-        r_T = self.arr_r_values[-1]
-
-        assert r_0.shape == r_T.shape == (self.num_particles,)
-
-        # product_of_potentials = torch.exp(self.lmbda * (r_T - r_0)) 
-        product_of_potentials = torch.prod(
-            torch.stack(self.arr_potential_values, dim=0), dim=0
+        arr_potential_values = torch.stack(self.arr_potential_values, dim=1)
+        assert importance_weight_arr.shape == arr_potential_values.shape, (
+            importance_weight_arr.shape,
+            arr_potential_values.shape,
         )
-        assert product_of_potentials.shape == (self.num_particles,)
+        assert arr_potential_values.shape == (
+            self.num_particles,
+            self.max_seq_len,
+        ), arr_potential_values.shape
 
-        inv_potential = 1. / product_of_potentials
-        assert inv_potential.shape == (self.num_particles,)
+        product_of_potentials = torch.exp(
+            torch.sum(torch.log(arr_potential_values * importance_weight_arr), dim=1)
+        )
+
+        # product_of_potentials = torch.prod(arr_potential_values  * importance_weight_arr, dim=1)
+        # product_of_potentials = product_of_potentials
+        assert product_of_potentials.shape == (self.num_particles,), (
+            product_of_potentials.shape,
+            importance_weight_arr.shape,
+        )
 
         Z = torch.mean(product_of_potentials)
         assert Z > 0, "Z must be positive for FK estimate"
-        
-        print("Z:", Z.item())
-        print('inv_potential:', inv_potential.mean().item())
-        print('product_of_potentials:', product_of_potentials.mean().item())
+
+        inv_potential = torch.exp(-torch.sum(torch.log(arr_potential_values), dim=1))
+
+        # inv_potential = torch.prod(
+        #     torch.stack(self.arr_potential_values, dim=1), dim=1
+        # ).pow(-1)
+        assert inv_potential.shape == (self.num_particles,)
+
+        # print("Z:", Z.item())
+        # print("potential_values", arr_potential_values.mean())
+
+        # print("inv_potential:", inv_potential.mean().item())
+        # print("product_of_potentials:", product_of_potentials.mean().item())
+
+        # importance_weight_per_particle = torch.exp(
+        #     torch.sum(torch.log(importance_weight_arr), dim=1)
+        # )
+        # print("fk mean", (test_function_values * inv_potential).mean().item())
+        # print(
+        #     "importance_weight_per_particle:",
+        #     importance_weight_per_particle.mean().item(),
+        # )
 
         estimate = Z * (test_function_values * inv_potential).mean().item()
+
         return estimate
