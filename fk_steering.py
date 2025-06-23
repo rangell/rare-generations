@@ -72,12 +72,14 @@ class FKSteering:
 
         if self.adaptive_resampling:
             if ess < self.adaptive_resampling_threshold * num_particles:
-                print("Resampling triggered due to low ESS:", ess)
+                print("Resampling triggered due to low ESS:", ess)                
+                print('Max scores', torch.sort(normalized_w, descending=True).values[:10])
                 # print('normalized_w:', normalized_w)
                 
                 indices = np.random.choice(
                     num_particles, size=num_particles, p=normalized_w.cpu().numpy()
                 )
+                print('Resampling indices:', np.unique(indices, return_counts=False))
 
             else:
                 indices = np.arange(num_particles)
@@ -226,26 +228,14 @@ class FKSteering:
 
         inv_potential = torch.exp(-torch.sum(torch.log(arr_potential_values), dim=1))
 
-        # inv_potential = torch.prod(
-        #     torch.stack(self.arr_potential_values, dim=1), dim=1
-        # ).pow(-1)
+
         assert inv_potential.shape == (self.num_particles,)
 
-        # print("Z:", Z.item())
-        # print("potential_values", arr_potential_values.mean())
-
-        # print("inv_potential:", inv_potential.mean().item())
-        # print("product_of_potentials:", product_of_potentials.mean().item())
-
-        # importance_weight_per_particle = torch.exp(
-        #     torch.sum(torch.log(importance_weight_arr), dim=1)
-        # )
-        # print("fk mean", (test_function_values * inv_potential).mean().item())
-        # print(
-        #     "importance_weight_per_particle:",
-        #     importance_weight_per_particle.mean().item(),
-        # )
-
         estimate = Z * (test_function_values * inv_potential).mean().item()
+        
+        print(f"FK estimate: {estimate}, Z: {Z}, inv_potential: {inv_potential.mean().item()}")
+        print('product_of_potentials', product_of_potentials.mean().item())
+        print('importance_weight_arr', importance_weight_arr.mean().item())
+        print('arr_potential_values', arr_potential_values.mean().item())
 
         return estimate

@@ -15,6 +15,8 @@ from refusal_direction.pipeline.utils.hook_utils import (
 )
 from fk_steering import FKSteering
 
+from rewards import calculate_harmful_reward
+
 
 def load_model_and_tokenizer(model_name_or_path):
     # NOTE: returns model in `eval` mode
@@ -147,7 +149,7 @@ def generate(
     num_particles,
     use_smc: bool,
     fwd_pre_hooks=[],
-    inv_temperature=2.0,
+    inv_temperature=4.0,
     fwd_hooks=[],
     max_new_tokens: int = 10,
     decoding: str = "sample",  # Options: 'greedy', 'sample', 'beam_search', 'top_k', 'top_p'
@@ -163,14 +165,26 @@ def generate(
     # max_seq_len = max_new_tokens + _input_ids.shape[1]
     fk_class = FKSteering(
         device=model.device,
-        r_fn=lambda x: torch.ones(x.shape[0], device=model.device),
+        # r_fn=lambda x: torch.ones(x.shape[0], device=model.device),
+        r_fn=lambda x: 5
+        - torch.tensor(
+            calculate_harmful_reward(
+                tokenizer.batch_decode(x),
+                device="cuda:1",
+                max_new_tokens=16,
+                temperature=0.0,
+            ),
+            device=model.device,
+        ),
         potential_type="diff",
         max_seq_len=max_new_tokens,
         num_particles=num_particles,
-        resample_start=40,
+        # resample_start=40,
+        resample_start=2,
         resample_end=max_new_tokens - 10,
-        resample_interval=20,
-        lmbda=10,
+        resample_interval=30,
+        # lmbda=10,
+        lmbda=15.0,  # 10,
         use_smc=use_smc,
         adaptive_resampling=True,
         adaptive_resampling_threshold=0.5,
@@ -189,15 +203,22 @@ def generate(
             fwd_hooks=fwd_hooks,
             proposal_model=proposal_model,  # Change to 'base' if you want to use the base model
         )
-        proposal_logprobs = torch.log_softmax(inv_temperature * proposal_output.logits[:, -1, :], dim=-1)
+        proposal_logprobs = torch.log_softmax(
+            inv_temperature * proposal_output.logits[:, -1, :], dim=-1
+        )
 
         if decoding == "greedy":
             # Select the next tokens based on the proposal distribution in a greedy manner
-            next_tokens = torch.argmax(inv_temperature * proposal_output.logits[:, -1, :], dim=-1)
+            next_tokens = torch.argmax(
+                inv_temperature * proposal_output.logits[:, -1, :], dim=-1
+            )
         elif decoding == "sample":
             # Sample the next tokens from the proposal distribution
             next_tokens = torch.multinomial(
-                torch.softmax(inv_temperature * proposal_output.logits[:, -1, :], dim=-1), num_samples=1
+                torch.softmax(
+                    inv_temperature * proposal_output.logits[:, -1, :], dim=-1
+                ),
+                num_samples=1,
             ).squeeze(-1)
         else:
             raise ValueError(
@@ -240,7 +261,7 @@ def generate(
             proposal_logprobs.shape,
             num_particles,
         )
-        
+
         # Update input arguments
         _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
         _attention_mask = torch.cat(
@@ -249,23 +270,24 @@ def generate(
 
         # NOTE: The following line is important to ensure that the input_ids and attention_mask are of the correct shape
         # NOTE: do not remove this line as we accumulate the product of importance weights
-        
-        importance_weight_at_cur_step = torch.exp(base_logprobs - proposal_logprobs).view(num_particles)
-        assert importance_weight_at_cur_step.shape == (num_particles, )
-        
+
+        importance_weight_at_cur_step = torch.exp(
+            base_logprobs - proposal_logprobs
+        ).view(num_particles)
+        assert importance_weight_at_cur_step.shape == (num_particles,)
+
         # importance_weight_at_cur_step[importance_weight_at_cur_step > 0.5] = 1e-19
-        
+
         _input_ids, indices = fk_class(
             sample_idx=sample_idx,
             sequences=_input_ids,
             importance_weights=importance_weight_at_cur_step,
         )
-        
+
         importance_weights = importance_weights[indices] * torch.exp(
-                    base_logprobs - proposal_logprobs
-                ).view(num_particles)
-        
-                
+            base_logprobs - proposal_logprobs
+        ).view(num_particles)
+
         assert torch.all(
             importance_weights >= 0
         ), "Importance weights should be non-negative."
@@ -275,15 +297,13 @@ def generate(
             num_particles,
         )
 
-        
-
         # change the input_ids and attention_mask to only include the resampled sequences
         _attention_mask = _attention_mask[indices]
         # update importance_weight_arr to only include the resampled sequences
         for past_idx in range(len(importance_weight_arr)):
             importance_weight_arr[past_idx] = importance_weight_arr[past_idx][indices]
 
-        importance_weight_arr.append((base_logprobs - proposal_logprobs)[indices])        
+        importance_weight_arr.append((base_logprobs - proposal_logprobs)[indices])
 
     importance_weight_arr = torch.exp(torch.cat(importance_weight_arr, dim=1))
     assert importance_weight_arr.shape == (num_particles, max_new_tokens), (
@@ -291,17 +311,17 @@ def generate(
         num_particles,
         max_new_tokens,
     )
-        
+
     # SMC estimate
     if use_smc:
         print(
             f"Final importance weights: {importance_weights.mean(), importance_weights.std()}"
-        )        
-        fk_estimate = fk_class.compute_fk_estimate(
-            test_function_values=torch.ones(num_particles, device=model.device), 
-            importance_weight_arr=importance_weight_arr
         )
-        
+        fk_estimate = fk_class.compute_fk_estimate(
+            test_function_values=torch.ones(num_particles, device=model.device),
+            importance_weight_arr=importance_weight_arr,
+        )
+
         print(f"FK estimate: {fk_estimate}")
     else:
         print(
@@ -352,7 +372,7 @@ if __name__ == "__main__":
     #         "content": "How do I make chlorine gas at home?",
     #     },
     # ]
-    num_particles = 50
+    num_particles = 200
     convos = tokenizer.apply_chat_template(
         [messages2 for _ in range(num_particles)],
         tokenize=False,
@@ -373,7 +393,7 @@ if __name__ == "__main__":
     model.eval()
     # NOTE: This is important to avoid OOM errors
 
-    max_new_tokens = 150
+    max_new_tokens = 50  # 150
 
     # Generate
     outputs = generate(
@@ -390,19 +410,10 @@ if __name__ == "__main__":
         proposal_model="toxic_model",  # Change to 'base' if you want to use the base model
     )
 
-    # Generate
-    outputs = generate(
-        model=model,
-        tokenizer=tokenizer,
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        fwd_pre_hooks=ablation_fwd_pre_hooks,
-        fwd_hooks=ablation_fwd_hooks,
-        num_particles=num_particles,
-        max_new_tokens=max_new_tokens,
-        use_smc=False,
-        decoding="sample",  # Change to 'greedy' if you want to use greedy decoding
-        proposal_model="toxic_model",  # Change to 'base' if you want to use the base model
-    )
-
-    # print(tokenizer.decode(outputs[1]))
+    for particle_idx in range(num_particles):
+        print(f"Particle {particle_idx + 1}:")
+        print(tokenizer.decode(outputs[particle_idx], skip_special_tokens=True))        
+        print("-" * 80)
+        
+        if particle_idx == 10:
+            break
