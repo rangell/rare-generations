@@ -45,7 +45,7 @@ class FKSteering:
         self.potential_type = potential_type
         assert potential_type in ["r_fn", "max", "diff", "bon"], potential_type
 
-        self.arr_r_values = [torch.ones(num_particles, device=device)]
+        self.arr_r_values = [torch.zeros(num_particles, device=device)]
         self.arr_potential_values = []
 
         # partial p(x_t, ...,x_{t+r} | x_{1:t}) / q(x_t, ...,x_{t+r} | x_{1:t}
@@ -75,10 +75,8 @@ class FKSteering:
                 print("Resampling triggered due to low ESS:", ess)                
                 print('Max scores', torch.sort(normalized_w, descending=True).values[:10])
                 # print('normalized_w:', normalized_w)
+                indices = self.stratified_resampling_fn(normalized_w)
                 
-                indices = np.random.choice(
-                    num_particles, size=num_particles, p=normalized_w.cpu().numpy()
-                )
                 print('Resampling indices:', np.unique(indices, return_counts=False))
 
             else:
@@ -87,14 +85,40 @@ class FKSteering:
             # If adaptive resampling is not used, always resample
             # This is a fallback to ensure resampling occurs
             print("Adaptive resampling is disabled, resampling will always occur.")
-            indices = np.random.choice(
-                num_particles, size=num_particles, p=normalized_w.cpu().numpy()
-            )
+            indices = self.stratified_resampling_fn(normalized_w)
 
         return indices
     
+    def multinomial(self, w):
+        return np.random.choice(
+                    num_particles, size=num_particles, p=normalized_w.cpu().numpy()
+                )
+    
     def stratified_resampling_fn(self, w):
-        pass
+
+        """
+        Stratified resampling of particles according to their weights.
+        
+        Args:
+            weights: 1D array-like, normalized weights (sum to 1).
+        
+        Returns:
+            indices: array of indices of resampled particles (ints, same length as weights)
+        """
+        w = w.cpu().numpy()
+        N = len(w)
+        positions = (np.random.rand(N) + np.arange(N)) / N
+        cumsum = np.cumsum(w)
+        indices = np.zeros(N, dtype=int)
+        i, j = 0, 0
+        while i < N:
+            if positions[i] < cumsum[j]:
+                indices[i] = j
+                i += 1
+            else:
+                j += 1
+        return indices
+
 
     def compute_potential(self, sample_idx, sequence, rs_candidates):
         if self.potential_type == "r_fn":
@@ -140,6 +164,8 @@ class FKSteering:
         # importance_weights = self.accum_importance_weights
 
         rs_candidates = self.r_fn(sequences)
+        # print(f"Sample {sample_idx}, r_fn candidates shape: {rs_candidates}")
+        print(f"r_fn candidates: {rs_candidates.mean().item()} +- {rs_candidates.std().item()}")
         assert rs_candidates.shape == (self.num_particles,), rs_candidates.shape
 
         potential_values = self.compute_potential(sample_idx, sequences, rs_candidates)
