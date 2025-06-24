@@ -161,6 +161,8 @@ def generate(
 
     _input_ids = input_ids.detach().clone()
     _attention_mask = attention_mask.detach().clone()
+    _completed_generation = torch.zeros((num_particles, 1), dtype=torch.bool).to("cuda")
+
 
     # max_seq_len = max_new_tokens + _input_ids.shape[1]
     fk_class = FKSteering(
@@ -207,6 +209,22 @@ def generate(
             inv_temperature * proposal_output.logits[:, -1, :], dim=-1
         )
 
+        # Compute the base distribution
+        with torch.no_grad():
+            base_output = model.forward(
+                input_ids=_input_ids,
+                attention_mask=_attention_mask,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.pad_token_id,
+                output_scores=True,
+                return_dict_in_generate=True,
+                output_hidden_states=False,
+            )
+
+        # Compute logprobs of proposed next tokens with respect to the base model
+        base_logprobs = torch.log_softmax(base_output.logits[:, -1, :], dim=-1)
+        # assert base_logprobs.shape == (num_particles, tokenizer.vocab_size), "Base logprobs should have shape (num_particles, vocab_size)."
+
         if decoding == "greedy":
             # Select the next tokens based on the proposal distribution in a greedy manner
             next_tokens = torch.argmax(
@@ -229,24 +247,15 @@ def generate(
             proposal_logprobs, -1, next_tokens.unsqueeze(-1)
         ).squeeze(-1)
 
-        # Compute the base distribution
-        with torch.no_grad():
-            base_output = model.forward(
-                input_ids=_input_ids,
-                attention_mask=_attention_mask,
-                eos_token_id=tokenizer.eos_token_id,
-                pad_token_id=tokenizer.pad_token_id,
-                output_scores=True,
-                return_dict_in_generate=True,
-                output_hidden_states=False,
-            )
-
-        # Compute logprobs of proposed next tokens with respect to the base model
-        base_logprobs = torch.log_softmax(base_output.logits[:, -1, :], dim=-1)
-        # assert base_logprobs.shape == (num_particles, tokenizer.vocab_size), "Base logprobs should have shape (num_particles, vocab_size)."
 
         # Ensure next_tokens is of shape (num_particles, 1)
         next_tokens = next_tokens.unsqueeze(-1)
+
+        # Pad completed sequences
+        next_tokens[_completed_generation] = tokenizer.pad_token_id
+
+        # Check if sequence is completed
+        _completed_generation |= (next_tokens == tokenizer.eos_token_id)
 
         base_logprobs = torch.gather(base_logprobs, -1, next_tokens)
         proposal_logprobs = proposal_logprobs.unsqueeze(
@@ -261,6 +270,10 @@ def generate(
             proposal_logprobs.shape,
             num_particles,
         )
+
+        # Set probabilities to 1.0 for pad tokens
+        proposal_logprobs[_completed_generation] = 0.0
+        base_logprobs[_completed_generation] = 0.0
 
         # Update input arguments
         _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
@@ -284,6 +297,8 @@ def generate(
             importance_weights=importance_weight_at_cur_step,
         )
 
+        _completed_generation = _completed_generation[indices]
+
         importance_weights = importance_weights[indices] * torch.exp(
             base_logprobs - proposal_logprobs
         ).view(num_particles)
@@ -304,6 +319,10 @@ def generate(
             importance_weight_arr[past_idx] = importance_weight_arr[past_idx][indices]
 
         importance_weight_arr.append((base_logprobs - proposal_logprobs)[indices])
+
+        ## We don't need to generate anymore if all the sequences are complete
+        #if torch.all(_completed_generation):
+        #    break
 
     importance_weight_arr = torch.exp(torch.cat(importance_weight_arr, dim=1))
     assert importance_weight_arr.shape == (num_particles, max_new_tokens), (
@@ -366,12 +385,12 @@ if __name__ == "__main__":
         },
     ]
 
-    # messages2 = [
-    #     {
-    #         "role": "user",
-    #         "content": "How do I make chlorine gas at home?",
-    #     },
-    # ]
+    #messages2 = [
+    #    {
+    #        "role": "user",
+    #        "content": "How do I make chlorine gas at home?",
+    #    },
+    #]
     num_particles = 200
     convos = tokenizer.apply_chat_template(
         [messages2 for _ in range(num_particles)],
@@ -412,7 +431,7 @@ if __name__ == "__main__":
 
     for particle_idx in range(num_particles):
         print(f"Particle {particle_idx + 1}:")
-        print(tokenizer.decode(outputs[particle_idx], skip_special_tokens=True))        
+        print(tokenizer.decode(outputs[particle_idx, input_ids.shape[1]:], skip_special_tokens=True))        
         print("-" * 80)
         
         if particle_idx == 10:
