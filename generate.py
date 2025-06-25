@@ -164,7 +164,6 @@ def generate(
     _input_ids = input_ids.detach().clone()
     _attention_mask = attention_mask.detach().clone()
     _completed_generation = torch.zeros((num_particles, 1), dtype=torch.bool).to("cuda")
-
     assert _input_ids.shape[0] == num_particles, (_input_ids.shape[0], num_particles)
     prompt_len = len(_input_ids[0])
 
@@ -229,10 +228,9 @@ def generate(
                 f"Decoding method '{decoding}' is not supported. Choose from 'greedy' or 'sample'."
             )
 
-        # import pdb; pdb.set_trace()
-        proposal_logprobs = torch.gather(
-            proposal_logprobs, -1, next_tokens.unsqueeze(-1)
-        ).squeeze(-1)
+        #proposal_logprobs = torch.gather(
+        #    proposal_logprobs, -1, next_tokens.unsqueeze(-1)
+        #).squeeze(-1)
 
         # Compute the base distribution
         with torch.no_grad():
