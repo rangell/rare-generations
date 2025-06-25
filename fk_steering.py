@@ -250,7 +250,7 @@ class FKSteering:
         )
 
         Z = torch.mean(product_of_potentials)
-        assert Z > 0, "Z must be positive for FK estimate"
+        assert Z > 0, f"Z = {Z} must be positive for FK estimate"
 
         inv_potential = torch.exp(-torch.sum(torch.log(arr_potential_values), dim=1))
 
