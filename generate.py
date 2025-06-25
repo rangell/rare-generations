@@ -210,28 +210,6 @@ def generate(
             inv_temperature * proposal_output.logits[:, -1, :], dim=-1
         )
 
-        if decoding == "greedy":
-            # Select the next tokens based on the proposal distribution in a greedy manner
-            next_tokens = torch.argmax(
-                inv_temperature * proposal_output.logits[:, -1, :], dim=-1
-            )
-        elif decoding == "sample":
-            # Sample the next tokens from the proposal distribution
-            next_tokens = torch.multinomial(
-                torch.softmax(
-                    inv_temperature * proposal_output.logits[:, -1, :], dim=-1
-                ),
-                num_samples=1,
-            ).squeeze(-1)
-        else:
-            raise ValueError(
-                f"Decoding method '{decoding}' is not supported. Choose from 'greedy' or 'sample'."
-            )
-
-        #proposal_logprobs = torch.gather(
-        #    proposal_logprobs, -1, next_tokens.unsqueeze(-1)
-        #).squeeze(-1)
-
         # Compute the base distribution
         with torch.no_grad():
             base_output = model.forward(
@@ -266,19 +244,19 @@ def generate(
                 f"Decoding method '{decoding}' is not supported. Choose from 'greedy' or 'sample'."
             )
 
-        # proposal_logprobs = torch.gather(
-        #     proposal_logprobs, -1, next_tokens.unsqueeze(-1)
-        # ).squeeze(-1)
+        proposal_logprobs = torch.gather(
+            proposal_logprobs, -1, next_tokens.unsqueeze(-1)
+        ).squeeze(-1)
 
 
         # Ensure next_tokens is of shape (num_particles, 1)
         next_tokens = next_tokens.unsqueeze(-1)
 
+        # Pad completed sequences
+        next_tokens[_completed_generation] = tokenizer.pad_token_id
+
         # Check if sequence is completed
         _completed_generation |= (next_tokens == tokenizer.eos_token_id)
-        
-        # Pad completed sequences
-        next_tokens[_completed_generation] = tokenizer.pad_token_id        
 
         base_logprobs = torch.gather(base_logprobs, -1, next_tokens)
         proposal_logprobs = proposal_logprobs.unsqueeze(
