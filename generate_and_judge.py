@@ -371,7 +371,7 @@ def generate(
             tokenizer.decode(_input_ids[0], skip_special_tokens=False),
         )
     else:
-        fk_estimate = fk_class.get_estimate(
+        fk_estimate = fk_class.compute_fk_estimate(
             importance_weights=importance_weights,
             judge_scores=judge_scores,
         )

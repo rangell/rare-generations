@@ -257,7 +257,7 @@ class FKSteering:
 
         assert inv_potential.shape == (self.num_particles,)
 
-        estimate = Z * (test_function_values * inv_potential).mean().item()
+        estimate = Z * (inv_potential * test_function_values).mean().item()
         
         print(f"FK estimate: {estimate}, Z: {Z}, inv_potential: {inv_potential.mean().item()}")
         print('product_of_potentials', product_of_potentials.mean().item())
