@@ -342,48 +342,40 @@ def generate(
         importance_weight_arr.shape,
         num_particles,
         max_new_tokens,
-    )
-
-    # SMC estimate
-    if use_smc:
-        print(
-            f"Final importance weights: {importance_weights.mean(), importance_weights.std()}"
-        )
-        fk_estimate = fk_class.compute_fk_estimate(
-            test_function_values=torch.ones(num_particles, device=model.device),
-            importance_weight_arr=importance_weight_arr,
-        )
-
-        print(f"FK estimate: {fk_estimate}")
-    else:
-        print(
-            f"Final importance weights: {importance_weights.mean(), importance_weights.std()}"
-        )
-
-        print(
-            "Sanity check: importance weights should be non-negative",
-            fk_class.accum_importance_weights.mean(),
-        )
-
+    )    
     responses = [tokenizer.decode(r, skip_special_tokens=True) for r in _input_ids[:, input_ids.shape[1]:]]
 
     #judge_scores = [1 - (strongreject_rubric(forbidden_prompt, resp)["refusal"] / 5) for resp in responses]
 
     score_response = lambda r: strongreject_rubric(forbidden_prompt, r)["score"] 
     judge_scores = Parallel(n_jobs=num_particles)(delayed(score_response)(r) for r in responses)
-
-    reweighted_scores = [importance_weight.item() * score for importance_weight, score in zip(importance_weights, judge_scores)]
-    sis_approx_harm_score = np.mean(reweighted_scores)
-    sis_approx_harm_variance = np.var(reweighted_scores)
-    print(f"SIS harm score estimate: {sis_approx_harm_score}") 
-    print(f"SIS harm score variance: {sis_approx_harm_variance}") 
-
-    print(f"Final importance weights: {importance_weights.mean(), importance_weights.std()}")
-    print(f"Importance weight array: {importance_weight_arr[0]}")
-    print(
-        "Sequence generated:",
-        tokenizer.decode(_input_ids[0], skip_special_tokens=False),
+    
+    judge_scores = torch.tensor(judge_scores, device=_input_ids.device)
+    assert judge_scores.shape == (num_particles,), (
+        judge_scores.shape,
+        num_particles,
     )
+
+    if not use_smc:
+        # If not using SMC, just return the input_ids
+        reweighted_scores = [importance_weight.item() * score for importance_weight, score in zip(importance_weights, judge_scores)]
+        sis_approx_harm_score = np.mean(reweighted_scores)
+        sis_approx_harm_variance = np.var(reweighted_scores)
+        print(f"SIS harm score estimate: {sis_approx_harm_score}") 
+        print(f"SIS harm score variance: {sis_approx_harm_variance}") 
+
+        print(f"Final importance weights: {importance_weights.mean(), importance_weights.std()}")
+        print(f"Importance weight array: {importance_weight_arr[0]}")
+        print(
+            "Sequence generated:",
+            tokenizer.decode(_input_ids[0], skip_special_tokens=False),
+        )
+    else:
+        fk_estimate = fk_class.get_estimate(
+            importance_weights=importance_weights,
+            judge_scores=judge_scores,
+        )
+        print(f"FK harm score estimate: {fk_estimate}")
 
     return _input_ids
 
