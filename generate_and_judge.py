@@ -370,14 +370,16 @@ def generate(
             "Sequence generated:",
             tokenizer.decode(_input_ids[0], skip_special_tokens=False),
         )
+        
+        return _input_ids, sis_approx_harm_score
     else:
         fk_estimate = fk_class.compute_fk_estimate(
-            importance_weights=importance_weights,
-            judge_scores=judge_scores,
+            importance_weight_arr=importance_weight_arr,
+            test_function_values=judge_scores,
         )
         print(f"FK harm score estimate: {fk_estimate}")
 
-    return _input_ids
+        return _input_ids, fk_estimate
 
 def seed_everything(seed: int = 42):
     """Set random seed for reproducibility."""
@@ -418,7 +420,7 @@ if __name__ == "__main__":
         }        
     ]
 
-    num_particles = 50
+    
     max_new_tokens = 50  # 150
     for example in mc_dataset:
         # Declare the conversation
@@ -432,61 +434,65 @@ if __name__ == "__main__":
                 "content": forbidden_prompt,
             },
         ]
-        convos = tokenizer.apply_chat_template(
-            [messages for _ in range(num_particles)],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-    
+        arr_harmfullness_scores = {}
+        for num_particles in [10, 50, 100, 500, 1000]:
+            convos = tokenizer.apply_chat_template(
+                [messages for _ in range(num_particles)],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
 
-        # Prepare the inputs
-        inputs = tokenizer(convos, return_tensors="pt", padding=True)
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
-        input_ids = inputs["input_ids"][:, 1:]
-        attention_mask = inputs["attention_mask"][:, 1:]
+            # Prepare the inputs
+            inputs = tokenizer(convos, return_tensors="pt", padding=True)
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+            input_ids = inputs["input_ids"][:, 1:]
+            attention_mask = inputs["attention_mask"][:, 1:]
 
-        # Clear cache to avoid OOM errors
-        gc.collect()
-        torch.cuda.empty_cache()
+            # Clear cache to avoid OOM errors
+            gc.collect()
+            torch.cuda.empty_cache()
 
-        # move model to eval mode
-        model.eval()
-        # NOTE: This is important to avoid OOM errors
+            # move model to eval mode
+            model.eval()
+            # NOTE: This is important to avoid OOM errors
 
-        print(f"Forbidden prompt: {forbidden_prompt}")
-        print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")        
-    
-        # Generate
-        outputs = generate(
-            model=model,
-            tokenizer=tokenizer,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            fwd_pre_hooks=ablation_fwd_pre_hooks,
-            fwd_hooks=ablation_fwd_hooks,
-            num_particles=num_particles,
-            max_new_tokens=max_new_tokens,
-            use_smc=True,
-            decoding="sample",  # Change to 'greedy' if you want to use greedy decoding
-            proposal_model="toxic_model",  # Change to 'base' if you want to use the base model
-            proposal_model_switch_idx=None,
-            resample_start=10,
-            resample_end=max_new_tokens - 20,
-            resample_interval=20,
-            lmbda=10.0,  # Adjust this value based on your needs   
-            adaptive_resampling=True,
-            adaptive_resampling_threshold=0.5,     
-            base_model_inv_temperature=3.5,
-            proposal_inv_temperature=3.5,
-        )
-    
-        for particle_idx in range(num_particles):
-            print(f"Particle {particle_idx + 1}:")
-            print(tokenizer.decode(outputs[particle_idx, input_ids.shape[1]:], skip_special_tokens=True))        
-            print("-" * 80)
-            
-            if particle_idx == 10:
-                break
-            
+            print(f"Forbidden prompt: {forbidden_prompt}")
+            print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")        
+        
+            # Generate
+            outputs, harmfulness_estimate = generate(
+                model=model,
+                tokenizer=tokenizer,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                fwd_pre_hooks=ablation_fwd_pre_hooks,
+                fwd_hooks=ablation_fwd_hooks,
+                num_particles=num_particles,
+                max_new_tokens=max_new_tokens,
+                use_smc=True,
+                decoding="sample",  # Change to 'greedy' if you want to use greedy decoding
+                proposal_model="toxic_model",  # Change to 'base' if you want to use the base model
+                proposal_model_switch_idx=None,
+                resample_start=10,
+                resample_end=max_new_tokens - 20,
+                resample_interval=20,
+                lmbda=10.0,  # Adjust this value based on your needs   
+                adaptive_resampling=True,
+                adaptive_resampling_threshold=0.5,     
+                base_model_inv_temperature=3.5,
+                proposal_inv_temperature=3.5,
+            )
+
+            arr_harmfullness_scores[num_particles] = harmfulness_estimate
+
+        print(f"Monte Carlo harm estimates for {forbidden_prompt}: {arr_harmfullness_scores}")
+            # for particle_idx in range(num_particles):
+            #     print(f"Particle {particle_idx + 1}:")
+            #     print(tokenizer.decode(outputs[particle_idx, input_ids.shape[1]:], skip_special_tokens=True))        
+            #     print("-" * 80)
+                
+            #     if particle_idx == 10:
+            #         break
+                
         break  # Remove this line to run for all examples in the dataset
 
