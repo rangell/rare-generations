@@ -17,7 +17,7 @@ from refusal_direction.pipeline.utils.hook_utils import (
     get_direction_ablation_output_hook,
 )
 from fk_steering import FKSteering
-from rewards import calculate_harmful_reward
+from rewards import calculate_harmful_reward, sr_harmful_reward_fn
 
 from strong_reject.evaluate import strongreject_rubric
 from datasets import load_dataset
@@ -149,6 +149,7 @@ def proposal_generator(
 def generate(
     model,
     tokenizer,
+    forbidden_prompt,
     input_ids,
     attention_mask,
     num_particles,
@@ -183,16 +184,20 @@ def generate(
     fk_class = FKSteering(
         device=model.device,
         # r_fn=lambda x: torch.ones(x.shape[0], device=model.device),
-        r_fn=lambda x: 5
-        - torch.tensor(
-            calculate_harmful_reward(
-                tokenizer.batch_decode(x[:, prompt_len:]),
-                device="cuda:1",
-                max_new_tokens=16,
-                temperature=0.0,
-            ),
-            device=model.device,
-        ),
+        #r_fn=lambda x: 5
+        #- torch.tensor(
+        #    calculate_harmful_reward(
+        #        tokenizer.batch_decode(x[:, prompt_len:]),
+        #        device="cuda:1",
+        #        max_new_tokens=16,
+        #        temperature=0.0,
+        #    ),
+        #    device=model.device,
+        #),
+        r_fn = lambda particles: sr_harmful_reward_fn(
+            forbidden_prompt=forbidden_prompt,
+            responses=tokenizer.batch_decode(particles[:, prompt_len:]),
+            device="cuda:1").to(model.device),
         potential_type="diff",
         max_seq_len=max_new_tokens,
         num_particles=num_particles,
@@ -343,11 +348,7 @@ def generate(
         importance_weight_arr.shape,
         num_particles,
         max_new_tokens,
-    )
-    responses = [
-        tokenizer.decode(r, skip_special_tokens=True)
-        for r in _input_ids[:, input_ids.shape[1] :]
-    ]
+    )    
 
     # judge_scores = [1 - (strongreject_rubric(forbidden_prompt, resp)["refusal"] / 5) for resp in responses]
 
@@ -483,6 +484,7 @@ if __name__ == "__main__":
             outputs, harmfulness_estimate = generate(
                 model=model,
                 tokenizer=tokenizer,
+                forbidden_prompt=forbidden_prompt,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 fwd_pre_hooks=ablation_fwd_pre_hooks,
@@ -503,7 +505,7 @@ if __name__ == "__main__":
                 proposal_inv_temperature=3.5,
             )
 
-            arr_harmfullness_scores[num_particles] = harmfulness_estimate
+            arr_harmfulness_scores[num_particles] = harmfulness_estimate
 
         print(
             f"Monte Carlo harm estimates for {forbidden_prompt}: {arr_harmfullness_scores}"
