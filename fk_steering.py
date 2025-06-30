@@ -41,6 +41,7 @@ class FKSteering:
         self.resampling_arr = torch.cat(
             [self.resampling_arr, torch.tensor([max_seq_len])]
         )
+        self.resampling_arr = self.resampling_arr - 1
 
         self.potential_type = potential_type
         assert potential_type in ["r_fn", "max", "diff", "bon"], potential_type
@@ -54,7 +55,7 @@ class FKSteering:
         # complete p(x_t, ...,x_{t+r} | x_{1:t}) / q(x_t, ...,x_{t+r} | x_{1:t}
         self.arr_importance_weights = torch.ones(num_particles, device=device)
 
-    def resampling_fn(self, w):
+    def resampling_fn(self, potential_values, importance_weights):
         """
         Resampling function that returns indices based on the importance weights.
 
@@ -64,7 +65,14 @@ class FKSteering:
         Output:
         indices: indices for resampling, shape (N,)
         """
-        num_particles = w.shape[0]
+        num_particles = potential_values.shape[0]
+        
+        w = potential_values * importance_weights.view(num_particles)
+        assert w.shape == (num_particles,), (
+            w.shape,
+            importance_weights.shape,
+            potential_values.shape,
+        )        
 
         # Normalize the weights
         normalized_w = w / torch.sum(w)
@@ -72,36 +80,38 @@ class FKSteering:
 
         if self.adaptive_resampling:
             if ess < self.adaptive_resampling_threshold * num_particles:
-                print("Resampling triggered due to low ESS:", ess)                
-                print('Max scores', torch.sort(normalized_w, descending=True).values[:10])
+                print("Resampling triggered due to low ESS:", ess)
+                # print(
+                #     "Max scores", torch.sort(normalized_w, descending=True).values[:10]
+                # )
                 # print('normalized_w:', normalized_w)
                 indices = self.stratified_resampling_fn(normalized_w)
-                
-                print('Resampling indices:', np.unique(indices, return_counts=False))
+
+                print("Unique resampling indices:", len(np.unique(indices, return_counts=False)))
 
             else:
-                indices = np.arange(num_particles)
+                indices = np.arange(num_particles)                
+                potential_values = torch.ones_like(potential_values) / num_particles
         else:
             # If adaptive resampling is not used, always resample
             # This is a fallback to ensure resampling occurs
             print("Adaptive resampling is disabled, resampling will always occur.")
             indices = self.stratified_resampling_fn(normalized_w)
 
-        return indices
-    
+        return indices, potential_values
+
     def multinomial(self, w):
         return np.random.choice(
-                    num_particles, size=num_particles, p=normalized_w.cpu().numpy()
-                )
-    
-    def stratified_resampling_fn(self, w):
+            num_particles, size=num_particles, p=normalized_w.cpu().numpy()
+        )
 
+    def stratified_resampling_fn(self, w):
         """
         Stratified resampling of particles according to their weights.
-        
+
         Args:
             weights: 1D array-like, normalized weights (sum to 1).
-        
+
         Returns:
             indices: array of indices of resampled particles (ints, same length as weights)
         """
@@ -118,7 +128,6 @@ class FKSteering:
             else:
                 j += 1
         return indices
-
 
     def compute_potential(self, sample_idx, sequence, rs_candidates):
         if self.potential_type == "r_fn":
@@ -165,7 +174,9 @@ class FKSteering:
 
         rs_candidates = self.r_fn(sequences)
         # print(f"Sample {sample_idx}, r_fn candidates shape: {rs_candidates}")
-        print(f"r_fn candidates: {rs_candidates.mean().item()} +- {rs_candidates.std().item()}")
+        print(
+            f"r_fn candidates: {rs_candidates.mean().item()} +- {rs_candidates.std().item()}"
+        )
         assert rs_candidates.shape == (self.num_particles,), rs_candidates.shape
 
         potential_values = self.compute_potential(sample_idx, sequences, rs_candidates)
@@ -176,16 +187,7 @@ class FKSteering:
             potential_values * self.accum_importance_weights.view(self.num_particles)
         )
 
-        normalized_potential = potential_importance_weighted / torch.sum(
-            potential_importance_weighted
-        )
-        assert normalized_potential.shape == (self.num_particles,), (
-            normalized_potential.shape,
-            importance_weights.shape,
-            potential_values.shape,
-        )
-
-        indices = self.resampling_fn(normalized_potential)
+        indices, potential_values = self.resampling_fn(potential_values=potential_values, importance_weights=self.accum_importance_weights)
 
         num_particles, seq_len = sequences.shape
         resampled_sequence = sequences[indices]
@@ -254,14 +256,15 @@ class FKSteering:
 
         inv_potential = torch.exp(-torch.sum(torch.log(arr_potential_values), dim=1))
 
-
         assert inv_potential.shape == (self.num_particles,)
 
         estimate = Z * (inv_potential * test_function_values).mean().item()
-        
-        print(f"FK estimate: {estimate}, Z: {Z}, inv_potential: {inv_potential.mean().item()}")
-        print('product_of_potentials', product_of_potentials.mean().item())
-        print('importance_weight_arr', importance_weight_arr.mean().item())
-        print('arr_potential_values', arr_potential_values.mean().item())
+
+        print(
+            f"FK estimate: {estimate}, Z: {Z}, inv_potential: {inv_potential.mean().item()}"
+        )
+        print("product_of_potentials", product_of_potentials.mean().item())
+        print("importance_weight_arr", importance_weight_arr.mean().item())
+        print("arr_potential_values", arr_potential_values.mean().item())
 
         return estimate
