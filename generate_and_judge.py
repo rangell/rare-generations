@@ -352,12 +352,18 @@ def generate(
     # judge_scores = [1 - (strongreject_rubric(forbidden_prompt, resp)["refusal"] / 5) for resp in responses]
 
     score_response = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
-    arr_judge_score = []
-    for chunk_idx in range(4):
-        judge_scores = Parallel(n_jobs=num_particles)(
-            delayed(score_response)(r) for r in responses[chunk_idx * num_particles : (chunk_idx + 1) * num_particles]
+    arr_judge_score = []    
+    
+    responses_per_chunk = 50
+    n_chunks = len(responses) // responses_per_chunk + (
+        1 if len(responses) % responses_per_chunk > 0 else 0
+    )
+    for chunk_idx in range(n_chunks):
+        n_responses = len(responses[chunk_idx * responses_per_chunk : (chunk_idx + 1) * responses_per_chunk])
+        judge_scores_chunk = Parallel(n_jobs=n_responses)(
+            delayed(score_response)(r) for r in responses[chunk_idx * responses_per_chunk : (chunk_idx + 1) * responses_per_chunk]
         )
-        arr_judge_score.extend(judge_scores)
+        arr_judge_score.extend(judge_scores_chunk)
 
     judge_scores = torch.tensor(arr_judge_score, device=_input_ids.device)
     assert judge_scores.shape == (num_particles,), (
@@ -388,7 +394,6 @@ def generate(
         return _input_ids, sis_approx_harm_score
     else:
         fk_estimate = fk_class.compute_fk_estimate(
-            importance_weight_arr=importance_weight_arr,
             test_function_values=judge_scores,
         )
         print(f"FK harm score estimate: {fk_estimate}")
@@ -450,7 +455,7 @@ if __name__ == "__main__":
             },
         ]
         arr_harmfullness_scores = {}
-        for num_particles in [100, 101, 102, 120]:
+        for num_particles in [100, 100, 100, 120]:
             convos = tokenizer.apply_chat_template(
                 [messages for _ in range(num_particles)],
                 tokenize=False,
@@ -486,14 +491,14 @@ if __name__ == "__main__":
                 max_new_tokens=max_new_tokens,
                 use_smc=True,
                 decoding="sample",  # Change to 'greedy' if you want to use greedy decoding
-                proposal_model="toxic_model",  # Change to 'base' if you want to use the base model
+                proposal_model="toxic_model",  # options ['base', 'toxic_model']
                 proposal_model_switch_idx=None,
                 resample_start=10,
                 resample_end=max_new_tokens - 20,
                 resample_interval=20,
-                lmbda=10.0,  # Adjust this value based on your needs
+                lmbda=10.0,  # 
                 adaptive_resampling=True,
-                adaptive_resampling_threshold=0.1,
+                adaptive_resampling_threshold=5. / num_particles,
                 base_model_inv_temperature=3.5,
                 proposal_inv_temperature=3.5,
             )

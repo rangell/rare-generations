@@ -66,13 +66,13 @@ class FKSteering:
         indices: indices for resampling, shape (N,)
         """
         num_particles = potential_values.shape[0]
-        
+
         w = potential_values * importance_weights.view(num_particles)
         assert w.shape == (num_particles,), (
             w.shape,
             importance_weights.shape,
             potential_values.shape,
-        )        
+        )
 
         # Normalize the weights
         normalized_w = w / torch.sum(w)
@@ -87,18 +87,27 @@ class FKSteering:
                 # print('normalized_w:', normalized_w)
                 indices = self.stratified_resampling_fn(normalized_w)
 
-                print("Unique resampling indices:", len(np.unique(indices, return_counts=False)))
+                print(
+                    "Unique resampling indices:",
+                    len(np.unique(indices, return_counts=False)),
+                )
 
             else:
-                indices = np.arange(num_particles)                
-                potential_values = torch.ones_like(potential_values) / num_particles
+                indices = np.arange(num_particles)
+                
+                # if adaptive resampling is not triggered, set potential values to uniform distribution
+                print("Adaptive resampling not triggered, using uniform potential values.")
+                potential_values = torch.ones_like(potential_values)
+                self.accum_importance_weights = torch.ones(
+                    num_particles, device=self.device
+                )
         else:
             # If adaptive resampling is not used, always resample
             # This is a fallback to ensure resampling occurs
             print("Adaptive resampling is disabled, resampling will always occur.")
             indices = self.stratified_resampling_fn(normalized_w)
 
-        return indices, potential_values
+        return indices, potential_values, self.accum_importance_weights
 
     def multinomial(self, w):
         return np.random.choice(
@@ -187,7 +196,10 @@ class FKSteering:
             potential_values * self.accum_importance_weights.view(self.num_particles)
         )
 
-        indices, potential_values = self.resampling_fn(potential_values=potential_values, importance_weights=self.accum_importance_weights)
+        indices, potential_values, self.accum_importance_weights = self.resampling_fn(
+            potential_values=potential_values,
+            importance_weights=self.accum_importance_weights,
+        )
 
         num_particles, seq_len = sequences.shape
         resampled_sequence = sequences[indices]
@@ -225,30 +237,27 @@ class FKSteering:
 
         return resampled_sequence, indices
 
-    def compute_fk_estimate(self, test_function_values, importance_weight_arr):
+    def compute_fk_estimate(self, test_function_values):
         assert (
             self.potential_type == "diff"
         ), "FK estimate only available for 'diff' potential type"
 
         arr_potential_values = torch.stack(self.arr_potential_values, dim=1)
-        assert importance_weight_arr.shape == arr_potential_values.shape, (
-            importance_weight_arr.shape,
-            arr_potential_values.shape,
-        )
+
         assert arr_potential_values.shape == (
             self.num_particles,
             self.max_seq_len,
         ), arr_potential_values.shape
 
-        product_of_potentials = torch.exp(
-            torch.sum(torch.log(arr_potential_values * importance_weight_arr), dim=1)
+        product_of_potentials = (
+            torch.exp(torch.sum(torch.log(arr_potential_values), dim=1))
+            * self.arr_importance_weights
         )
 
         # product_of_potentials = torch.prod(arr_potential_values  * importance_weight_arr, dim=1)
         # product_of_potentials = product_of_potentials
         assert product_of_potentials.shape == (self.num_particles,), (
             product_of_potentials.shape,
-            importance_weight_arr.shape,
         )
 
         Z = torch.mean(product_of_potentials)
@@ -264,7 +273,7 @@ class FKSteering:
             f"FK estimate: {estimate}, Z: {Z}, inv_potential: {inv_potential.mean().item()}"
         )
         print("product_of_potentials", product_of_potentials.mean().item())
-        print("importance_weight_arr", importance_weight_arr.mean().item())
+        print("importance_weight_arr", self.arr_importance_weights.mean().item())
         print("arr_potential_values", arr_potential_values.mean().item())
 
         return estimate
