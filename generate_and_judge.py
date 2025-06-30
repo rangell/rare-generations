@@ -496,8 +496,11 @@ if __name__ == "__main__":
                 proposal_model_switch_idx=None,
                 resample_start=10,
                 resample_end=max_new_tokens - 20,
+                resample_start=10,
+                resample_end=max_new_tokens - 20,
                 resample_interval=20,
                 lmbda=10.0,  # 
+                lmbda=5.0,  # Adjust this value based on your needs   
                 adaptive_resampling=True,
                 adaptive_resampling_threshold=5. / num_particles,
                 base_model_inv_temperature=3.5,
@@ -506,15 +509,15 @@ if __name__ == "__main__":
 
             arr_harmfulness_scores[num_particles] = harmfulness_estimate
 
-        print(f"SMC harm estimates for {forbidden_prompt}: {arr_harmfulness_scores}")
-        print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")        
-        print("\n\n")
-            # for particle_idx in range(num_particles):
-            #     print(f"Particle {particle_idx + 1}:")
-            #     print(tokenizer.decode(outputs[particle_idx, input_ids.shape[1]:], skip_special_tokens=True))        
-            #     print("-" * 80)
-                
-            #     if particle_idx == 10:
-            #         break
-                
-        #break  # Remove this line to run for all examples in the dataset
+        print(
+            f"Monte Carlo harm estimates for {forbidden_prompt}: {arr_harmfullness_scores}"
+        )
+        # for particle_idx in range(num_particles):
+        #     print(f"Particle {particle_idx + 1}:")
+        #     print(tokenizer.decode(outputs[particle_idx, input_ids.shape[1]:], skip_special_tokens=True))
+        #     print("-" * 80)
+
+        #     if particle_idx == 10:
+        #         break
+
+        break  # Remove this line to run for all examples in the dataset
