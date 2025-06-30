@@ -61,7 +61,7 @@ def llm_invoke(
             input_ids=input_ids.input_ids,
             attention_mask=input_ids.attention_mask,
             max_new_tokens=max_new_tokens,
-            temperature=temperature,
+            # temperature=temperature,
             do_sample=temperature > 0.0,
         )
 

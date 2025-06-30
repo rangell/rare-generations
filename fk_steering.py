@@ -19,12 +19,14 @@ class FKSteering:
         use_smc,
         adaptive_resampling: Optional[bool] = True,
         adaptive_resampling_threshold: Optional[float] = 0.5,
+        smc_verbose: Optional[bool] = False,
     ):
         self.use_smc = use_smc
 
         self.device = device
         self.r_fn = r_fn
         self.lmbda = lmbda
+        self.smc_verbose = smc_verbose
 
         self.num_particles = num_particles
         self.adaptive_resampling = adaptive_resampling
@@ -79,24 +81,22 @@ class FKSteering:
         ess = 1.0 / torch.sum(torch.pow(normalized_w, 2)).item()
 
         if self.adaptive_resampling:
-            if ess < self.adaptive_resampling_threshold * num_particles:
-                print("Resampling triggered due to low ESS:", ess)
-                # print(
-                #     "Max scores", torch.sort(normalized_w, descending=True).values[:10]
-                # )
-                # print('normalized_w:', normalized_w)
+            if ess < self.adaptive_resampling_threshold * num_particles:                
                 indices = self.stratified_resampling_fn(normalized_w)
 
-                print(
-                    "Unique resampling indices:",
-                    len(np.unique(indices, return_counts=False)),
-                )
+                if self.smc_verbose:
+                    print("Resampling triggered due to low ESS:", ess)
+                    print(
+                        "Unique resampling indices:",
+                        len(np.unique(indices, return_counts=False)),
+                    )
 
             else:
                 indices = np.arange(num_particles)
                 
                 # if adaptive resampling is not triggered, set potential values to uniform distribution
-                print("Adaptive resampling not triggered, using uniform potential values.")
+                if self.smc_verbose:                    
+                    print("Adaptive resampling not triggered, using uniform potential values.")
                 potential_values = torch.ones_like(potential_values)
                 self.accum_importance_weights = torch.ones(
                     num_particles, device=self.device
@@ -183,9 +183,10 @@ class FKSteering:
 
         rs_candidates = self.r_fn(sequences)
         # print(f"Sample {sample_idx}, r_fn candidates shape: {rs_candidates}")
-        print(
-            f"r_fn candidates: {rs_candidates.mean().item()} +- {rs_candidates.std().item()}"
-        )
+        if self.smc_verbose:
+            print(
+                f"r_fn candidates: {rs_candidates.mean().item()} +- {rs_candidates.std().item()}"
+            )
         assert rs_candidates.shape == (self.num_particles,), rs_candidates.shape
 
         potential_values = self.compute_potential(sample_idx, sequences, rs_candidates)
@@ -268,12 +269,12 @@ class FKSteering:
         assert inv_potential.shape == (self.num_particles,)
 
         estimate = Z * (inv_potential * test_function_values).mean().item()
-
-        print(
-            f"FK estimate: {estimate}, Z: {Z}, inv_potential: {inv_potential.mean().item()}"
-        )
-        print("product_of_potentials", product_of_potentials.mean().item())
-        print("importance_weight_arr", self.arr_importance_weights.mean().item())
-        print("arr_potential_values", arr_potential_values.mean().item())
+        if self.smc_verbose:
+            print(
+                f"FK estimate: {estimate}, Z: {Z}, inv_potential: {inv_potential.mean().item()}"
+            )
+            print("product_of_potentials", product_of_potentials.mean().item())
+            print("importance_weight_arr", self.arr_importance_weights.mean().item())
+            print("arr_potential_values", arr_potential_values.mean().item())
 
         return estimate
