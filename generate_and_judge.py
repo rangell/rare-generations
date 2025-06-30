@@ -468,7 +468,7 @@ if __name__ == "__main__":
             },
         ]
         arr_harmfullness_scores = []
-        for num_particles in [50, 100, 100, 120]:
+        for num_particles in [300]:
             convos = tokenizer.apply_chat_template(
                 [messages for _ in range(num_particles)],
                 tokenize=False,
@@ -513,7 +513,7 @@ if __name__ == "__main__":
                 adaptive_resampling=True,
                 adaptive_resampling_threshold=5.0 / num_particles,
                 base_model_inv_temperature=1.0,
-                proposal_inv_temperature=2.0,
+                proposal_inv_temperature=3.0,
                 smc_verbose=False,
             )
 
