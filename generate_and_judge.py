@@ -513,7 +513,7 @@ if __name__ == "__main__":
                 adaptive_resampling=True,
                 adaptive_resampling_threshold=5.0 / num_particles,
                 base_model_inv_temperature=1.0,
-                proposal_inv_temperature=1.0,
+                proposal_inv_temperature=2.0,
                 smc_verbose=False,
             )
 
