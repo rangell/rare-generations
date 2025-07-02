@@ -515,18 +515,17 @@ if __name__ == "__main__":
                 resample_interval = 10
                 adaptive_resampling_threshold = 5.0 / num_particles
                 proposal_inv_temperature = 2.0  # Base model temperature
+                proposal_model_switch_idx = 20
             else:
                 print(
                     "Using the base model for proposal generation. This is the default behavior."
                 )
-                resample_start = 5
+                resample_start = 10
                 resample_interval = 10
                 adaptive_resampling_threshold = 0.5
                 proposal_inv_temperature = 1.0  # Base model temperature
-
-            
-            proposal_model_switch_idx = None if proposal_model == 'base' else 20 # If None, use the proposal model for all steps
-            
+                proposal_model_switch_idx = None  # If None, use the proposal model for all steps
+                        
             outputs, harmfulness_estimate = generate(
                 model=model,
                 tokenizer=tokenizer,
