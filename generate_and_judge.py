@@ -107,43 +107,91 @@ def proposal_generator(
     tokenizer,
     fwd_pre_hooks,
     fwd_hooks,
-    proposal_model="base",
+    proposal_model,
+    proposal_inv_temperature,
+    decoding,
+    _completed_generation,
 ):
     # Compute the proposal distribution
+
+    model_inputs = dict(
+        input_ids=_input_ids,
+        attention_mask=_attention_mask,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.pad_token_id,
+        output_scores=True,
+        return_dict_in_generate=True,
+        output_hidden_states=False,        
+    )
 
     if proposal_model == "base":
         # Use the base model to generate the proposal distribution
         # NOTE: This is the default behavior, so we can skip adding hooks
         with torch.no_grad():
-            proposal_output = model.forward(
-                input_ids=_input_ids,
-                attention_mask=_attention_mask,
-                eos_token_id=tokenizer.eos_token_id,
-                pad_token_id=tokenizer.pad_token_id,
-                output_scores=True,
-                return_dict_in_generate=True,
-                output_hidden_states=False,
-            )
+            proposal_output = model.forward(**model_inputs)
     elif proposal_model == "toxic_model":
         with add_hooks(
             module_forward_pre_hooks=fwd_pre_hooks, module_forward_hooks=fwd_hooks
         ):
             with torch.no_grad():
-                proposal_output = model.forward(
-                    input_ids=_input_ids,
-                    attention_mask=_attention_mask,
-                    eos_token_id=tokenizer.eos_token_id,
-                    pad_token_id=tokenizer.pad_token_id,
-                    output_scores=True,
-                    return_dict_in_generate=True,
-                    output_hidden_states=False,
-                )
+                proposal_output = model.forward(**model_inputs)
     else:
         raise ValueError(
             f"Proposal model '{proposal_model}' is not supported. Choose from 'base' or 'toxic_model'."
         )
 
-    return proposal_output
+    proposal_logprobs = torch.log_softmax(
+        proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
+    )
+
+    next_tokens = token_sampler(
+        decoding=decoding,
+        proposal_output=proposal_output,
+        proposal_inv_temperature=proposal_inv_temperature,
+    )
+    proposal_logprobs = torch.gather(
+        proposal_logprobs, -1, next_tokens.unsqueeze(-1)
+    ).squeeze(-1)
+    
+    assert proposal_logprobs.shape == (proposal_output.logits.shape[0],)
+    
+    
+    # Ensure next_tokens is of shape (num_particles, 1)
+    next_tokens = next_tokens.unsqueeze(-1)
+
+    # Check if sequence is completed
+    _completed_generation |= next_tokens == tokenizer.eos_token_id
+
+    # Pad completed sequences
+    next_tokens[_completed_generation] = tokenizer.pad_token_id
+
+    proposal_logprobs = proposal_logprobs.unsqueeze(
+        -1
+    )  # Ensure proposal_logprobs is of shape (num_particles, 1)
+
+    return proposal_output, proposal_logprobs, next_tokens, _completed_generation
+
+
+def token_sampler(decoding, proposal_output, proposal_inv_temperature):
+    if decoding == "greedy":
+        # Select the next tokens based on the proposal distribution in a greedy manner
+        next_tokens = torch.argmax(
+            proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
+        )
+    elif decoding == "sample":
+        # Sample the next tokens from the proposal distribution
+        next_tokens = torch.multinomial(
+            torch.softmax(
+                proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
+            ),
+            num_samples=1,
+        ).squeeze(-1)
+    else:
+        raise ValueError(
+            f"Decoding method '{decoding}' is not supported. Choose from 'greedy' or 'sample'."
+        )
+
+    return next_tokens
 
 
 def generate(
@@ -223,7 +271,7 @@ def generate(
             proposal_model = "base"
             proposal_inv_temperature = base_model_inv_temperature
 
-        proposal_output = proposal_generator(
+        proposal_output, proposal_logprobs, next_tokens, _completed_generation = proposal_generator(
             _input_ids=_input_ids,
             _attention_mask=_attention_mask,
             model=model,
@@ -231,72 +279,33 @@ def generate(
             fwd_pre_hooks=fwd_pre_hooks,
             fwd_hooks=fwd_hooks,
             proposal_model=proposal_model,  # Change to 'base' if you want to use the base model
-        )
-        proposal_logprobs = torch.log_softmax(
-            proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
-        )
-
-        # Compute the base distribution
-        with torch.no_grad():
-            base_output = model.forward(
-                input_ids=_input_ids,
-                attention_mask=_attention_mask,
-                eos_token_id=tokenizer.eos_token_id,
-                pad_token_id=tokenizer.pad_token_id,
-                output_scores=True,
-                return_dict_in_generate=True,
-                output_hidden_states=False,
-            )
-
-        # Compute logprobs of proposed next tokens with respect to the base model
-        base_logprobs = torch.log_softmax(base_output.logits[:, -1, :], dim=-1)
-        # assert base_logprobs.shape == (num_particles, tokenizer.vocab_size), "Base logprobs should have shape (num_particles, vocab_size)."
-
-        if decoding == "greedy":
-            # Select the next tokens based on the proposal distribution in a greedy manner
-            next_tokens = torch.argmax(
-                proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
-            )
-        elif decoding == "sample":
-            # Sample the next tokens from the proposal distribution
-            next_tokens = torch.multinomial(
-                torch.softmax(
-                    proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
-                ),
-                num_samples=1,
-            ).squeeze(-1)
-        else:
-            raise ValueError(
-                f"Decoding method '{decoding}' is not supported. Choose from 'greedy' or 'sample'."
-            )
-
-        proposal_logprobs = torch.gather(
-            proposal_logprobs, -1, next_tokens.unsqueeze(-1)
-        ).squeeze(-1)
-
-        # Ensure next_tokens is of shape (num_particles, 1)
-        next_tokens = next_tokens.unsqueeze(-1)
-
-        # Check if sequence is completed
-        _completed_generation |= next_tokens == tokenizer.eos_token_id
-
-        # Pad completed sequences
-        next_tokens[_completed_generation] = tokenizer.pad_token_id
-
-        base_logprobs = torch.gather(base_logprobs, -1, next_tokens)
-        proposal_logprobs = proposal_logprobs.unsqueeze(
-            -1
-        )  # Ensure proposal_logprobs is of shape (num_particles, 1)
-
-        assert base_logprobs.shape == (num_particles, 1), (
-            base_logprobs.shape,
-            num_particles,
-        )
-        assert proposal_logprobs.shape == (num_particles, 1), (
-            proposal_logprobs.shape,
-            num_particles,
+            proposal_inv_temperature=proposal_inv_temperature,
+            decoding=decoding,  # Change to 'greedy' if you want to use greedy decoding
+            _completed_generation=_completed_generation
         )
 
+        if proposal_model != "base":
+            # Compute the base distribution
+            with torch.no_grad():
+                base_output = model.forward(
+                    input_ids=_input_ids,
+                    attention_mask=_attention_mask,
+                    eos_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.pad_token_id,
+                    output_scores=True,
+                    return_dict_in_generate=True,
+                    output_hidden_states=False,
+                )
+
+            # Compute logprobs of proposed next tokens with respect to the base model
+            base_logprobs = torch.log_softmax(base_output.logits[:, -1, :], dim=-1)
+            # assert base_logprobs.shape == (num_particles, tokenizer.vocab_size), "Base logprobs should have shape (num_particles, vocab_size)."
+
+            base_logprobs = torch.gather(base_logprobs, -1, next_tokens)
+
+        elif proposal_model == "base":
+            base_logprobs = proposal_logprobs.clone()
+            
         # Update input arguments
         _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
         _attention_mask = torch.cat(
@@ -310,18 +319,19 @@ def generate(
             base_logprobs - proposal_logprobs
         ).view(num_particles)
         assert importance_weight_at_cur_step.shape == (num_particles,)
-
-        # importance_weight_at_cur_step[importance_weight_at_cur_step > 0.5] = 1e-19
-
+        
         _input_ids, indices = fk_class(
             sample_idx=sample_idx,
             sequences=_input_ids,
             importance_weights=importance_weight_at_cur_step,
         )
 
-        importance_weights = importance_weights[indices] * torch.exp(
-            base_logprobs - proposal_logprobs
-        ).view(num_particles)
+        if proposal_model == "base":
+            importance_weights = torch.ones_like(importance_weight_at_cur_step)
+        else:
+            importance_weights = importance_weights[indices] * torch.exp(
+                base_logprobs - proposal_logprobs
+            ).view(num_particles)
 
         assert torch.all(
             importance_weights >= 0
@@ -360,7 +370,7 @@ def generate(
     n_chunks = len(responses) // responses_per_chunk + (
         1 if len(responses) % responses_per_chunk > 0 else 0
     )
-    for chunk_idx in range(n_chunks):
+    for chunk_idx in tqdm(range(n_chunks)):
         n_responses = len(
             responses[
                 chunk_idx * responses_per_chunk : (chunk_idx + 1) * responses_per_chunk
@@ -405,6 +415,8 @@ def generate(
         fk_estimate = fk_class.compute_fk_estimate(
             test_function_values=judge_scores,
         )
+        if fk_estimate == 0:
+            print("Judge scores:", judge_scores.mean(), judge_scores.std())
         print(f"FK harm score estimate: {fk_estimate}")
 
         return _input_ids, fk_estimate
@@ -468,7 +480,7 @@ if __name__ == "__main__":
             },
         ]
         arr_harmfullness_scores = []
-        for num_particles in [300]:
+        for num_particles in [400, 400, 400]:
             convos = tokenizer.apply_chat_template(
                 [messages for _ in range(num_particles)],
                 tokenize=False,
@@ -493,6 +505,28 @@ if __name__ == "__main__":
             print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
 
             # Generate
+            proposal_model = "base"  # Change to 'base' if you want to use the base model
+            
+            if proposal_model == "toxic_model":
+                print(
+                    "Using the toxic model for proposal generation."
+                )
+                resample_start = 10
+                resample_interval = 10
+                adaptive_resampling_threshold = 5.0 / num_particles
+                proposal_inv_temperature = 2.0  # Base model temperature
+            else:
+                print(
+                    "Using the base model for proposal generation. This is the default behavior."
+                )
+                resample_start = 5
+                resample_interval = 10
+                adaptive_resampling_threshold = 0.5
+                proposal_inv_temperature = 1.0  # Base model temperature
+
+            
+            proposal_model_switch_idx = None if proposal_model == 'base' else 20 # If None, use the proposal model for all steps
+            
             outputs, harmfulness_estimate = generate(
                 model=model,
                 tokenizer=tokenizer,
@@ -504,17 +538,17 @@ if __name__ == "__main__":
                 max_new_tokens=max_new_tokens,
                 use_smc=True,
                 decoding="sample",  # Change to 'greedy' if you want to use greedy decoding
-                proposal_model="toxic_model",  # options ['base', 'toxic_model']
-                proposal_model_switch_idx=None,
-                resample_start=10,
+                proposal_model=proposal_model,  # options ['base', 'toxic_model']
+                proposal_model_switch_idx=proposal_model_switch_idx,  # If None, use the proposal model for all steps
+                resample_start=resample_start,
                 resample_end=max_new_tokens - 20,
-                resample_interval=20,
-                lmbda=10.0,  #
+                resample_interval=resample_interval,
+                lmbda=8.0,  #
                 adaptive_resampling=True,
-                adaptive_resampling_threshold=5.0 / num_particles,
+                adaptive_resampling_threshold=adaptive_resampling_threshold,
                 base_model_inv_temperature=1.0,
-                proposal_inv_temperature=3.0,
-                smc_verbose=False,
+                proposal_inv_temperature=proposal_inv_temperature,
+                smc_verbose=True,
             )
 
             arr_harmfullness_scores.append(harmfulness_estimate)
