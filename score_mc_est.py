@@ -4,8 +4,10 @@ import json
 import random
 from tqdm import tqdm
 
+from datasets import Dataset
 from joblib import Parallel, delayed
 import torch
+import numpy as np
 
 from strong_reject.evaluate import strongreject_rubric
 
@@ -35,3 +37,17 @@ if __name__ == '__main__':
     # dump to json  (TODO: fix this)
     with open("mc_harm_est_llama3.2-1b-raw-scored.json", "w") as f:
         json.dump(generations, f)
+
+    dataset_dict = defaultdict(list)
+    for prompt, result_dict in generations.items():
+        scores = []
+        for response_stats in result_dict.values():
+            scores += [response_stats["score"]] * response_stats["count"]
+        dataset_dict["forbidden_prompt"].append(prompt)
+        dataset_dict["harm_scores"].append(scores)
+        dataset_dict["harm_mean"].append(np.mean(scores))
+        dataset_dict["harm_var"].append(np.var(scores))
+
+    ds = Dataset.from_dict(dataset_dict)
+    ds.to_json("mc_harm_est_10k_llama3.2-1b.json")
+    
