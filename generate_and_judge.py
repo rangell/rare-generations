@@ -331,12 +331,9 @@ def generate(
         dist.broadcast(_input_ids, src=0)
         dist.broadcast(indices, src=0)
 
-        if proposal_forward == base_forward:
-            importance_weights = torch.ones_like(importance_weight_at_cur_step)
-        else:
-            importance_weights = importance_weights[indices] * torch.exp(
-                base_logprobs - proposal_logprobs
-            ).view(num_particles)
+        importance_weights = importance_weights[indices] * torch.exp(
+            base_logprobs - proposal_logprobs
+        ).view(num_particles)
 
         assert torch.all(
             importance_weights >= 0
@@ -506,7 +503,7 @@ if __name__ == "__main__":
             },
         ]
         arr_harmfullness_scores = []
-        for num_particles in [150]:
+        for num_particles in [10]:
             convos = tokenizer.apply_chat_template(
                 [messages for _ in range(num_particles)],
                 tokenize=False,
@@ -549,7 +546,7 @@ if __name__ == "__main__":
                 resample_interval = 20
                 adaptive_resampling_threshold = 5.0 / num_particles
                 proposal_inv_temperature = 1.0  # Base model temperature
-                proposal_model_switch_idx = 20
+                proposal_model_switch_idx = 10
             else:
                 accelerator.print(
                     "Using the base model for proposal generation. This is the default behavior."
