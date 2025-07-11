@@ -43,8 +43,10 @@ class FKSteering:
             resample_start, resample_end + 1, resample_interval
         )
         self.resampling_arr = torch.cat(
-            [self.resampling_arr - 1, torch.tensor([max_seq_len])]
+            [self.resampling_arr - 1, torch.tensor([max_seq_len - 1])]
         )
+        if self.smc_verbose:
+            print(f"Resampling steps: {self.resampling_arr.tolist()}")
 
         self.potential_type = potential_type
         assert potential_type in ["r_fn", "max", "diff", "bon"], potential_type
@@ -82,9 +84,7 @@ class FKSteering:
         normalized_w = w / torch.sum(w)
         ess = 1.0 / torch.sum(torch.pow(normalized_w, 2)).item()
 
-        if self.importance_resampling_at_last_step and step_idx == self.max_seq_len:
-            pass
-        elif step_idx == self.max_seq_len and not self.importance_resampling_at_last_step:
+        if step_idx == self.max_seq_len - 1 and not self.importance_resampling_at_last_step:
             print("Not resampling at last step, using uniform potential values.")
             return np.arange(num_particles), potential_values
 
@@ -187,6 +187,7 @@ class FKSteering:
 
 
         rs_candidates = self.r_fn(sequences)
+
         # print(f"Sample {sample_idx}, r_fn candidates shape: {rs_candidates}")
         if self.smc_verbose:
             print(
