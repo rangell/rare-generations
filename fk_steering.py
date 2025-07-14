@@ -1,0 +1,280 @@
+import numpy as np
+import torch
+from typing import Callable, List, Optional, Tuple, Union
+
+
+class FKSteering:
+
+    def __init__(
+        self,
+        device,
+        r_fn,
+        potential_type,
+        max_seq_len,
+        num_particles,
+        resample_start,
+        resample_end,
+        resample_interval,
+        lmbda,
+        use_smc,
+        adaptive_resampling: Optional[bool] = True,
+        adaptive_resampling_threshold: Optional[float] = 0.5,
+        smc_verbose: Optional[bool] = False,
+    ):
+        self.use_smc = use_smc
+
+        self.device = device
+        self.r_fn = r_fn
+        self.lmbda = lmbda
+        self.smc_verbose = smc_verbose
+
+        self.num_particles = num_particles
+        self.adaptive_resampling = adaptive_resampling
+        self.adaptive_resampling_threshold = adaptive_resampling_threshold
+
+        self.resample_start = resample_start
+        self.resample_end = resample_end
+        self.resample_interval = resample_interval
+        self.max_seq_len = max_seq_len
+
+        self.resampling_arr = torch.arange(
+            resample_start, resample_end + 1, resample_interval
+        )
+        self.resampling_arr = torch.cat(
+            [self.resampling_arr, torch.tensor([max_seq_len])]
+        )
+        self.resampling_arr = self.resampling_arr - 1
+
+        self.potential_type = potential_type
+        assert potential_type in ["r_fn", "max", "diff", "bon"], potential_type
+
+        self.arr_r_values = [torch.zeros(num_particles, device=device)]
+        self.arr_potential_values = []
+
+        # partial p(x_t, ...,x_{t+r} | x_{1:t}) / q(x_t, ...,x_{t+r} | x_{1:t}
+        self.accum_importance_weights = torch.ones(num_particles, device=device)
+
+        # complete p(x_t, ...,x_{t+r} | x_{1:t}) / q(x_t, ...,x_{t+r} | x_{1:t}
+        self.arr_importance_weights = torch.ones(num_particles, device=device)
+
+    def resampling_fn(self, potential_values, importance_weights):
+        """
+        Resampling function that returns indices based on the importance weights.
+
+        Input:
+        w: unnormalized importance weights, shape (N,)
+
+        Output:
+        indices: indices for resampling, shape (N,)
+        """
+        num_particles = potential_values.shape[0]
+
+        w = potential_values * importance_weights.view(num_particles)
+        assert w.shape == (num_particles,), (
+            w.shape,
+            importance_weights.shape,
+            potential_values.shape,
+        )
+
+        # Normalize the weights
+        normalized_w = w / torch.sum(w)
+        ess = 1.0 / torch.sum(torch.pow(normalized_w, 2)).item()
+
+        if self.adaptive_resampling:
+            if ess < self.adaptive_resampling_threshold * num_particles:                
+                indices = self.stratified_resampling_fn(normalized_w)
+
+                if self.smc_verbose:
+                    print("Resampling triggered due to low ESS:", ess)
+                    print(
+                        "Unique resampling indices:",
+                        len(np.unique(indices, return_counts=False)),
+                    )
+
+            else:
+                indices = np.arange(num_particles)
+                
+                # if adaptive resampling is not triggered, set potential values to uniform distribution
+                if self.smc_verbose:                    
+                    print("Adaptive resampling not triggered, using uniform potential values.")
+                potential_values = torch.ones_like(potential_values)
+                self.accum_importance_weights = torch.ones(
+                    num_particles, device=self.device
+                )
+        else:
+            # If adaptive resampling is not used, always resample
+            # This is a fallback to ensure resampling occurs
+            print("Adaptive resampling is disabled, resampling will always occur.")
+            indices = self.stratified_resampling_fn(normalized_w)
+
+        return indices, potential_values, self.accum_importance_weights
+
+    def multinomial(self, w):
+        return np.random.choice(
+            num_particles, size=num_particles, p=normalized_w.cpu().numpy()
+        )
+
+    def stratified_resampling_fn(self, w):
+        """
+        Stratified resampling of particles according to their weights.
+
+        Args:
+            weights: 1D array-like, normalized weights (sum to 1).
+
+        Returns:
+            indices: array of indices of resampled particles (ints, same length as weights)
+        """
+        w = w.cpu().numpy()
+        N = len(w)
+        positions = (np.random.rand(N) + np.arange(N)) / N
+        cumsum = np.cumsum(w)
+        indices = np.zeros(N, dtype=int)
+        i, j = 0, 0
+        while i < N:
+            if positions[i] < cumsum[j]:
+                indices[i] = j
+                i += 1
+            else:
+                j += 1
+        return indices
+
+    def compute_potential(self, sample_idx, sequence, rs_candidates):
+        if self.potential_type == "r_fn":
+            raise NotImplementedError("r_fn potential type not implemented")
+        elif self.potential_type == "max":
+            raise NotImplementedError("Max potential type not implemented")
+        elif self.potential_type == "diff":
+            rs_old = self.arr_r_values[-1]
+            return torch.exp(self.lmbda * (rs_candidates - rs_old))
+
+        elif self.potential_type == "bon":
+            if sample_idx == 0:
+                return torch.ones_like(rs_candidates)
+        else:
+            raise ValueError(f"Unknown potential type: {self.potential_type}")
+
+    def update_history(self, indices, arr_r_values, arr_potential_values):
+        for past_idx in range(len(arr_r_values)):
+            arr_r_values[past_idx] = arr_r_values[past_idx][indices]
+
+        for past_idx in range(len(arr_potential_values)):
+            arr_potential_values[past_idx] = arr_potential_values[past_idx][indices]
+
+        return arr_r_values, arr_potential_values
+
+    def __call__(self, sample_idx, sequences, importance_weights):
+
+        # collect product of importance_weights
+        self.accum_importance_weights = (
+            self.accum_importance_weights * importance_weights.view(self.num_particles)
+        )
+
+        if sample_idx not in self.resampling_arr or not self.use_smc:
+            # If not resampling, just append one as potential values
+            self.arr_potential_values.append(
+                torch.ones(self.num_particles, device=self.device)
+            )
+
+            # If not resampling, just return the sequences and indices
+            return sequences, torch.arange(self.num_particles, device=self.device)
+
+        # # change importance_weights to accumulated weights
+        # importance_weights = self.accum_importance_weights
+
+        rs_candidates = self.r_fn(sequences)
+        # print(f"Sample {sample_idx}, r_fn candidates shape: {rs_candidates}")
+        if self.smc_verbose:
+            print(
+                f"r_fn candidates: {rs_candidates.mean().item()} +- {rs_candidates.std().item()}"
+            )
+        assert rs_candidates.shape == (self.num_particles,), rs_candidates.shape
+
+        potential_values = self.compute_potential(sample_idx, sequences, rs_candidates)
+        assert potential_values.shape == (self.num_particles,), potential_values.shape
+
+        # Normalize potential values to get probabilities
+        potential_importance_weighted = (
+            potential_values * self.accum_importance_weights.view(self.num_particles)
+        )
+
+        indices, potential_values, self.accum_importance_weights = self.resampling_fn(
+            potential_values=potential_values,
+            importance_weights=self.accum_importance_weights,
+        )
+
+        num_particles, seq_len = sequences.shape
+        resampled_sequence = sequences[indices]
+
+        assert resampled_sequence.shape == (
+            num_particles,
+            seq_len,
+        ), (resampled_sequence.shape, self.num_particles, seq_len)
+
+        # Update r_values and potential_values to new indices
+        arr_r_values, arr_potential_values = self.update_history(
+            indices,
+            arr_r_values=self.arr_r_values,
+            arr_potential_values=self.arr_potential_values,
+        )
+
+        self.arr_r_values = arr_r_values
+        self.arr_potential_values = arr_potential_values
+        self.arr_importance_weights = self.arr_importance_weights[indices]
+
+        self.arr_r_values.append(rs_candidates[indices])
+        self.arr_potential_values.append(potential_values[indices])
+
+        self.arr_importance_weights = (
+            self.arr_importance_weights * self.accum_importance_weights[indices]
+        )
+        assert self.arr_importance_weights.shape == (
+            self.num_particles,
+        ), self.arr_importance_weights.shape
+
+        # Update accumulated importance weights
+        self.accum_importance_weights = torch.ones(
+            self.num_particles, device=self.device
+        )
+
+        return resampled_sequence, indices
+
+    def compute_fk_estimate(self, test_function_values):
+        assert (
+            self.potential_type == "diff"
+        ), "FK estimate only available for 'diff' potential type"
+
+        arr_potential_values = torch.stack(self.arr_potential_values, dim=1)
+
+        assert arr_potential_values.shape == (
+            self.num_particles,
+            self.max_seq_len,
+        ), arr_potential_values.shape
+
+        product_of_potentials = (
+            torch.exp(torch.sum(torch.log(arr_potential_values), dim=1))
+            * self.arr_importance_weights
+        )
+
+        # product_of_potentials = torch.prod(arr_potential_values  * importance_weight_arr, dim=1)
+        # product_of_potentials = product_of_potentials
+        assert product_of_potentials.shape == (self.num_particles,), (
+            product_of_potentials.shape,
+        )
+
+        Z = torch.mean(product_of_potentials)
+        assert Z > 0, f"Z = {Z} must be positive for FK estimate"
+
+        inv_potential = torch.exp(-torch.sum(torch.log(arr_potential_values), dim=1))
+
+        assert inv_potential.shape == (self.num_particles,)
+
+        estimate = Z * (inv_potential * test_function_values).mean().item()
+        if self.smc_verbose:
+            print(
+                f"FK estimate: {estimate}, Z: {Z}, inv_potential: {inv_potential.mean().item()}"
+            )
+            print("product_of_potentials", product_of_potentials.mean().item())
+            print("importance_weight_arr", self.arr_importance_weights.mean().item())
+            print("arr_potential_values", arr_potential_values.mean().item())
+
+        return estimate

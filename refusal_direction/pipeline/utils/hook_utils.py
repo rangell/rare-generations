@@ -38,7 +38,7 @@ def add_hooks(
         for h in handles:
             h.remove()
 
-def get_direction_ablation_input_pre_hook(direction: Tensor):
+def get_direction_ablation_input_pre_hook(direction: Tensor, ablation_intensity: float = 1.0):
     def hook_fn(module, input):
         nonlocal direction
 
@@ -49,7 +49,7 @@ def get_direction_ablation_input_pre_hook(direction: Tensor):
 
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
         direction = direction.to(activation) 
-        activation -= (activation @ direction).unsqueeze(-1) * direction 
+        activation -= ablation_intensity * (activation @ direction).unsqueeze(-1) * direction 
 
         if isinstance(input, tuple):
             return (activation, *input[1:])
@@ -57,7 +57,7 @@ def get_direction_ablation_input_pre_hook(direction: Tensor):
             return activation
     return hook_fn
 
-def get_direction_ablation_output_hook(direction: Tensor):
+def get_direction_ablation_output_hook(direction: Tensor, ablation_intensity: float = 1.0):
     def hook_fn(module, input, output):
         nonlocal direction
 
@@ -68,7 +68,7 @@ def get_direction_ablation_output_hook(direction: Tensor):
 
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
         direction = direction.to(activation)
-        activation -= (activation @ direction).unsqueeze(-1) * direction 
+        activation -= ablation_intensity * (activation @ direction).unsqueeze(-1) * direction 
 
         if isinstance(output, tuple):
             return (activation, *output[1:])

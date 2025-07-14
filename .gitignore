@@ -1,6 +1,7 @@
 # Byte-compiled / optimized / DLL files
 *logs*
 *output/
+new_code/
 
 *.jsonl
 
@@ -178,3 +179,5 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+*.pyc
