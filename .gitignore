@@ -5,6 +5,8 @@ new_code/
 
 *.jsonl
 
+model_outputs/
+
 
 __pycache__/
 *.py[cod]

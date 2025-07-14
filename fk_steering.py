@@ -20,8 +20,10 @@ class FKSteering:
         adaptive_resampling: Optional[bool] = True,
         adaptive_resampling_threshold: Optional[float] = 0.5,
         smc_verbose: Optional[bool] = False,
+        importance_resampling_at_last_step: Optional[bool] = False,
     ):
         self.use_smc = use_smc
+        self.importance_resampling_at_last_step = importance_resampling_at_last_step
 
         self.device = device
         self.r_fn = r_fn
@@ -69,7 +71,9 @@ class FKSteering:
         """
         num_particles = potential_values.shape[0]
 
-        w = potential_values * importance_weights.view(num_particles)
+        # w = potential_values * importance_weights.view(num_particles)
+        w = potential_values
+         
         assert w.shape == (num_particles,), (
             w.shape,
             importance_weights.shape,
@@ -79,6 +83,10 @@ class FKSteering:
         # Normalize the weights
         normalized_w = w / torch.sum(w)
         ess = 1.0 / torch.sum(torch.pow(normalized_w, 2)).item()
+        
+        if step_idx == self.max_seq_len - 1 and not self.importance_resampling_at_last_step:
+            print("Not resampling at last step, using uniform potential values.")
+            return np.arange(num_particles), potential_values
 
         if self.adaptive_resampling:
             if ess < self.adaptive_resampling_threshold * num_particles:                
@@ -252,11 +260,8 @@ class FKSteering:
 
         product_of_potentials = (
             torch.exp(torch.sum(torch.log(arr_potential_values), dim=1))
-            * self.arr_importance_weights
         )
 
-        # product_of_potentials = torch.prod(arr_potential_values  * importance_weight_arr, dim=1)
-        # product_of_potentials = product_of_potentials
         assert product_of_potentials.shape == (self.num_particles,), (
             product_of_potentials.shape,
         )
@@ -267,8 +272,18 @@ class FKSteering:
         inv_potential = torch.exp(-torch.sum(torch.log(arr_potential_values), dim=1))
 
         assert inv_potential.shape == (self.num_particles,)
+        
+        importance_weighted_test_func = test_function_values * self.arr_importance_weights
 
-        estimate = Z * (inv_potential * test_function_values).mean().item()
+        if self.importance_resampling_at_last_step:
+            estimate = Z * (inv_potential * importance_weighted_test_func).mean().item()
+        else:
+            normalized_potential_values = (
+                arr_potential_values[:, -1] / arr_potential_values[:, -1].sum()
+            )
+            estimate = Z * (inv_potential * imp_weighted_test_function_values * normalized_potential_values).sum()
+
+            
         if self.smc_verbose:
             print(
                 f"FK estimate: {estimate}, Z: {Z}, inv_potential: {inv_potential.mean().item()}"
