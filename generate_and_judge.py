@@ -82,24 +82,6 @@ def score_responses(
     )
 
     return judge_scores
-                chunk_idx * responses_per_chunk : (chunk_idx + 1) * responses_per_chunk
-            ]
-        )
-        judge_scores_chunk = Parallel(n_jobs=n_responses)(
-            delayed(score_response)(r)
-            for r in responses[
-                chunk_idx * responses_per_chunk : (chunk_idx + 1) * responses_per_chunk
-            ]
-        )
-        arr_judge_score.extend(judge_scores_chunk)
-
-    judge_scores = torch.tensor(arr_judge_score, device=input_ids.device)
-    assert judge_scores.shape == (num_particles,), (
-        judge_scores.shape,
-        num_particles,
-    )
-
-    return judge_scores
 
 
 def batched_model_forward(
