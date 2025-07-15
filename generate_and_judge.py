@@ -26,19 +26,79 @@ from rewards import calculate_harmful_reward, sr_harmful_reward_fn
 from strong_reject.evaluate import strongreject_rubric
 from datasets import load_dataset
 
-from utils import load_model_and_tokenizer, load_refusal_direction, get_all_direction_ablation_hooks, token_sampler, create_model_wrapper
+from utils import (
+    load_model_and_tokenizer,
+    load_refusal_direction,
+    get_all_direction_ablation_hooks,
+    token_sampler,
+    create_model_wrapper,
+)
 
 
 def score_responses(
-    tokenizer,
-    forbidden_prompt: str,
-    input_ids: torch.Tensor,
-    n_jobs: int = 50
+    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50
 ):
-    scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
-    responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
-    judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
-    judge_scores = torch.tensor(judge_scores, device=input_ids.device)
+    # scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
+    # responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
+    # judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
+    # judge_scores = torch.tensor(judge_scores, device=input_ids.device)
+    
+    score_response = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
+    arr_judge_score = []
+    
+    responses = [
+        tokenizer.decode(r, skip_special_tokens=True)
+        for r in input_ids[:, input_ids.shape[1] :]
+    ]
+
+    responses_per_chunk = 50
+    n_chunks = len(responses) // responses_per_chunk + (
+        1 if len(responses) % responses_per_chunk > 0 else 0
+    )
+
+    for idx, response in enumerate(responses):
+        print("Sequence generated: ", response)
+        if idx == 5:
+            break
+
+    for chunk_idx in tqdm(range(n_chunks)):
+        n_responses = len(
+            responses[
+                chunk_idx * responses_per_chunk : (chunk_idx + 1) * responses_per_chunk
+            ]
+        )
+        judge_scores_chunk = Parallel(n_jobs=n_responses)(
+            delayed(score_response)(r)
+            for r in responses[
+                chunk_idx * responses_per_chunk : (chunk_idx + 1) * responses_per_chunk
+            ]
+        )
+        arr_judge_score.extend(judge_scores_chunk)
+
+    judge_scores = torch.tensor(arr_judge_score, device=input_ids.device)
+    assert judge_scores.shape == (num_particles,), (
+        judge_scores.shape,
+        num_particles,
+    )
+
+    return judge_scores
+                chunk_idx * responses_per_chunk : (chunk_idx + 1) * responses_per_chunk
+            ]
+        )
+        judge_scores_chunk = Parallel(n_jobs=n_responses)(
+            delayed(score_response)(r)
+            for r in responses[
+                chunk_idx * responses_per_chunk : (chunk_idx + 1) * responses_per_chunk
+            ]
+        )
+        arr_judge_score.extend(judge_scores_chunk)
+
+    judge_scores = torch.tensor(arr_judge_score, device=input_ids.device)
+    assert judge_scores.shape == (num_particles,), (
+        judge_scores.shape,
+        num_particles,
+    )
+
     return judge_scores
 
 
@@ -49,7 +109,7 @@ def batched_model_forward(
     _completed_generation,
     decoding: str = "",
     inv_temperature: float = 1.0,
-    batch_size: int = 256
+    batch_size: int = 256,
 ):
     num_chunks = int((_input_ids.shape[0] / batch_size) + 1)
     chunked_input_ids = _input_ids.chunk(num_chunks)
@@ -135,14 +195,16 @@ def generate(
             proposal_forward = base_forward
             proposal_inv_temperature = base_inv_temperature
 
-        _, next_tokens, proposal_logprobs, _completed_generation = batched_model_forward(
-            model_forward=proposal_forward,
-            _input_ids=_input_ids,
-            _attention_mask=_attention_mask,
-            _completed_generation=_completed_generation,
-            decoding=decoding,
-            inv_temperature=proposal_inv_temperature,
-            batch_size=gen_batch_size
+        _, next_tokens, proposal_logprobs, _completed_generation = (
+            batched_model_forward(
+                model_forward=proposal_forward,
+                _input_ids=_input_ids,
+                _attention_mask=_attention_mask,
+                _completed_generation=_completed_generation,
+                decoding=decoding,
+                inv_temperature=proposal_inv_temperature,
+                batch_size=gen_batch_size,
+            )
         )
 
         if proposal_forward != base_forward:
@@ -153,14 +215,12 @@ def generate(
                 _completed_generation=_completed_generation,
                 decoding=decoding,
                 inv_temperature=proposal_inv_temperature,
-                batch_size=gen_batch_size
+                batch_size=gen_batch_size,
             )
-            base_logprobs = torch.gather(
-                logprobs_distribution, -1, next_tokens
-            )
+            base_logprobs = torch.gather(logprobs_distribution, -1, next_tokens)
         else:
             base_logprobs = proposal_logprobs.clone()
-            
+
         # Update input arguments
         _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
         _attention_mask = torch.cat(
@@ -212,9 +272,7 @@ def generate(
 
     # Judge the responses
     judge_scores = score_responses(
-        tokenizer,
-        forbidden_prompt,
-        input_ids=_input_ids[:, input_ids.shape[1]:]
+        tokenizer, forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :]
     )
 
     assert judge_scores.shape == (num_particles,), (
@@ -252,7 +310,7 @@ def generate(
             print("Judge scores:", judge_scores.mean(), judge_scores.std())
         print(f"FK harm score estimate: {fk_estimate}")
 
-        return _input_ids, fk_estimate
+        return _input_ids, fk_estimate.cpu().numpy()
 
 
 def seed_everything(seed: int = 42):
@@ -275,20 +333,26 @@ def create_reward_fn(
     prompt_len: int = -1,
     batch_size: int = 32,
 ):
-    def reward_fn(_input_ids):
-        num_chunks = int((_input_ids.shape[0] / batch_size) + 1)
-        all_scores = []
-        for b_input_ids in _input_ids.chunk(num_chunks):
-            batch_scores = sr_harmful_reward_fn(
-                    forbidden_prompt,
-                    tokenizer.batch_decode(b_input_ids[:, prompt_len:]),
-                    device="cuda:0"
-            )
-            all_scores.append(batch_scores)
-        print("here2")
-        return torch.cat(all_scores)
+    # def reward_fn(_input_ids):
+    #     num_chunks = int((_input_ids.shape[0] / batch_size) + 1)
+    #     all_scores = []
+    #     for b_input_ids in _input_ids.chunk(num_chunks):
+    #         batch_scores = sr_harmful_reward_fn(
+    #                 forbidden_prompt,
+    #                 tokenizer.batch_decode(b_input_ids[:, prompt_len:]),
+    #                 device="cuda:0"
+    #         )
+    #         all_scores.append(batch_scores)
+    #     return torch.cat(all_scores)
+
+    reward_fn = lambda x: sr_harmful_reward_fn(
+        forbidden_prompt=forbidden_prompt,
+        responses=tokenizer.batch_decode(x[:, prompt_len:]),
+        device="cuda:1",
+    ).to(model.device)
 
     return reward_fn
+
 
 def get_exp_args():
     parser = argparse.ArgumentParser()
@@ -299,7 +363,7 @@ def get_exp_args():
     parser.add_argument(
         "--max_new_tokens",
         type=int,
-        default=150,
+        default=50,
         help="Maximum number of new tokens to generate.",
     )
     parser.add_argument(
@@ -321,7 +385,7 @@ def get_exp_args():
         action="store_true",
         help="Whether to use Sequential Monte Carlo (SMC) for generation.",
     )
-    
+
     parser.add_argument(
         "--model_name",
         type=str,
@@ -330,54 +394,47 @@ def get_exp_args():
     )
     parser.add_argument(
         "--save_output",
-        action='store_true',
-        help='Whether to store the outputs in a log file'
+        action="store_true",
+        help="Whether to store the outputs in a log file",
     )
-    
+
     parser.add_argument(
-        "--smc_verbose",
-        action='store_true',
-        help='Whether to print SMC logs'
+        "--smc_verbose", action="store_true", help="Whether to print SMC logs"
     )
-    
+
     parser.add_argument(
         "--output_dir",
         type=str,
-        default='./model_outputs',
-        help='Store args, output probabilities'
+        default="./model_outputs",
+        help="Store args, output probabilities",
     )
 
-    
     args = parser.parse_args()
-    
+
     smc_args = dict(
-        decoding='sample',
-        resample_start=10 if args.proposal_model=='base' else 20,
-        resample_end=args.max_new_tokens - 20,
-        resample_interval=10 if args.proposal_model == 'base' else 20,
-        lmbda=10 if args.proposal_model=='base' else 4,
+        decoding="sample",
+        resample_start=10 if args.proposal_model == "base" else 10,
+        resample_end=args.max_new_tokens - 10,
+        resample_interval=10 if args.proposal_model == "base" else 20,
+        lmbda=10 if args.proposal_model == "base" else 4,
         adaptive_resampling=True,
-        adaptive_resampling_threshold=0.5 if args.proposal_model=='base' else 0.1,
+        adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.1,
         base_inv_temperature=1.0,
         proposal_inv_temperature=1.0,
         proposal_model_switch_idx=None,
     )
-    
+
     metadata = {**smc_args, **vars(args)}
-    
+
     combined_args = argparse.Namespace(**metadata)
-    
+
     for key, value in metadata.items():
         print(f"{key}: {value}")
-        
+
     if combined_args.save_output:
         output_dir = args.output_dir
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = (
-            Path(output_dir)
-            / args.model_name.split('/')[1]
-            / timestamp
-        )
+        output_dir = Path(output_dir) / args.model_name.split("/")[1] / timestamp
         try:
             os.makedirs(output_dir)
         except FileExistsError:
@@ -387,18 +444,16 @@ def get_exp_args():
             print(f"Waiting for {wait_time} seconds before proceeding...")
             time.sleep(wait_time)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = (
-                Path(output_dir)
-                / args.dataset
-                / timestamp
-            )
+            output_dir = Path(output_dir) / args.dataset / timestamp
             os.makedirs(output_dir, exist_ok=False)
 
-        metadata['timestamp'] = timestamp
+        metadata["timestamp"] = timestamp
         metadata_file = os.path.join(output_dir, "metadata.json")
         with open(metadata_file, "w") as f:
             json.dump(metadata, f, indent=4)
         print(f"Experiment metadata saved to {metadata_file}")
+    else:
+        output_dir = None
 
     return combined_args, output_dir
 
@@ -408,10 +463,11 @@ if __name__ == "__main__":
     args, output_dir = get_exp_args()
     seed_everything(args.seed)
 
-
     model_name_or_path = args.model_name
-    #model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
-    refusal_direction_path = f"refusal_direction/pipeline/runs/{args.model_name.split('/')[1]}/"
+    # model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
+    refusal_direction_path = (
+        f"refusal_direction/pipeline/runs/{args.model_name.split('/')[1]}/"
+    )
 
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(model_name_or_path)
@@ -434,10 +490,12 @@ if __name__ == "__main__":
         model=model,
         tokenizer=tokenizer,
         fwd_pre_hooks=ablation_fwd_pre_hooks,
-        fwd_hooks=ablation_fwd_hooks
+        fwd_hooks=ablation_fwd_hooks,
     )
 
-    mc_dataset = load_dataset("json", data_files="mc_harm_est_10k_llama3.2-1b.json")["train"]
+    mc_dataset = load_dataset("json", data_files="mc_harm_est_10k_llama3.2-1b.json")[
+        "train"
+    ]
 
     model_logs = {}
     max_new_tokens = args.max_new_tokens  # 150
@@ -454,16 +512,14 @@ if __name__ == "__main__":
             },
         ]
         arr_harmfullness_scores = []
-        
+
         print(f"Forbidden prompt: {forbidden_prompt}")
         print(f"Monte Carlo harm estimate: {example['harm_mean']}")
         print(f"Monte Carlo harm variance: {example['harm_var']}")
 
-        model_logs['Forbidden prompt'] = forbidden_prompt
-        model_logs['MC mean'] = example['harm_mean']
-        model_logs['MC var'] = example['harm_var']
-        
-        
+        model_logs["Forbidden prompt"] = forbidden_prompt
+        model_logs["MC mean"] = example["harm_mean"]
+        model_logs["MC var"] = example["harm_var"]
 
         for num_particles_idx, num_particles in enumerate(args.num_particle_arr):
             convos = tokenizer.apply_chat_template(
@@ -491,9 +547,8 @@ if __name__ == "__main__":
             gc.collect()
             torch.cuda.empty_cache()
 
-
             # Generate
-                        
+
             outputs, harmfulness_estimate = generate(
                 base_forward=base_forward,
                 proposal_forward=proposal_forward,
@@ -518,17 +573,15 @@ if __name__ == "__main__":
             )
 
             arr_harmfullness_scores.append(harmfulness_estimate)
-            
-            model_logs[f"new_harm_estimates_{num_particles}_{num_particles_idx}"] = harmfulness_estimate.cpu().item()
 
-            
+            model_logs[f"new_harm_estimates_{num_particles}_{num_particles_idx}"] = (
+                harmfulness_estimate
+            )
+
         print(
             f"Monte Carlo harm estimates for {forbidden_prompt}: {arr_harmfullness_scores}"
         )
-        
-        if args.save_output:
-                with open(output_dir / "model_logs.json", "w") as f:
-                    json.dump(aggregate_stats, f, indent=4)
 
-        
-        
+        if args.save_output:
+            with open(output_dir / "model_logs.json", "w") as f:
+                json.dump(model_logs, f, indent=4)
