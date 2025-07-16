@@ -582,12 +582,12 @@ if __name__ == "__main__":
 
             if proposal_model == "toxic_model":
                 print("Using the toxic model for proposal generation.")
-                resample_start = 10
+                resample_start = 20
                 resample_interval = 10
                 adaptive_resampling_threshold = 0.5
                 proposal_inv_temperature = 1.0  # Toxic model temperature
                 proposal_model_switch_idx = None
-                lmbda = 4.0
+                lmbda = 6.0
             else:
                 print(
                     "Using the toxic model for proposal generation. This is the default behavior."

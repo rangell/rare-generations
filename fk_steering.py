@@ -43,9 +43,9 @@ class FKSteering:
             resample_start, resample_end + 1, resample_interval
         )
         
-        # self.resampling_arr = torch.cat(
-        #     [self.resampling_arr - 1, torch.tensor([max_seq_len - 1])]
-        # )
+        self.resampling_arr = torch.cat(
+            [self.resampling_arr - 1, torch.tensor([max_seq_len - 1])]
+        )
         print('Resampling steps:', self.resampling_arr.tolist())
         print('Not resampling at last step:')
         self.resampling_arr = self.resampling_arr.to(device)
