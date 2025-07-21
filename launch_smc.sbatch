@@ -1,0 +1,18 @@
+#!/bin/bash
+#SBATCH --time=12:00:00
+#SBATCH --mem=40GB
+#SBATCH --job-name=gsm_eval
+#SBATCH --partition=radiology,a100_short,a100_long
+#SBATCH --output=logs/%x_%A_%a.out
+#SBATCH --error=logs/%x_%A_%a.err
+#SBATCH --cpus-per-task=4
+#SBATCH --array=0
+#SBATCH --gres=gpu:2
+
+# Initialize Conda for bash
+eval "$(conda shell.bash hook)"
+
+# Activate the geneval environment
+conda activate sal
+
+python generate_and_judge.py  --save_output --use_smc
