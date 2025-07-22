@@ -199,7 +199,7 @@ def score_responses(
     tokenizer,
     forbidden_prompt: str,
     input_ids: torch.Tensor,
-    n_jobs: int = 10
+    n_jobs: int = 50
 ):
     scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
     responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
@@ -566,7 +566,7 @@ if __name__ == "__main__":
     else:
         proposal_forward = base_forward
 
-    mc_dataset = load_dataset("json", data_files="mc_harm_est_10k_llama3.2-1b.json")[
+    mc_dataset = load_dataset("json", data_files=f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_{args.model_name.split('/')[1]}.json")[
         "train"
     ]
 
