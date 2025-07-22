@@ -164,7 +164,9 @@ def proposal_generator(
     # Ensure next_tokens is of shape (num_particles, 1)
     next_tokens = next_tokens.unsqueeze(-1)
 
+    # TODO this might be broken
     # Check if sequence is completed
+    # import pdb; pdb.set_trace()
     _completed_generation |= next_tokens == tokenizer.eos_token_id
 
     # Pad completed sequences
@@ -173,6 +175,7 @@ def proposal_generator(
     proposal_logprobs = proposal_logprobs.unsqueeze(
         -1
     )  # Ensure proposal_logprobs is of shape (num_particles, 1)
+    proposal_logprobs[_completed_generation] = 0
 
     return proposal_output, proposal_logprobs, next_tokens, _completed_generation
 
@@ -268,16 +271,15 @@ def generate(
         importance_resampling_at_last_step=importance_resampling_at_last_step,
     )
     # Main generation loop
-    importance_weights = torch.ones(num_particles, device=_input_ids.device)
-    importance_weight_arr = []
-    for sample_idx in tqdm(range(max_new_tokens)):
+    importance_weights = torch.ones(num_particles, device=_input_ids.device)     
+    for step_idx in tqdm(range(max_new_tokens)):
 
         if (
-            sample_idx == proposal_model_switch_idx
+            step_idx == proposal_model_switch_idx
             and proposal_model_switch_idx is not None
         ):
             print(
-                f"Switching proposal model to 'base' at step {sample_idx} at temperature {base_inv_temperature}."
+                f"Switching proposal model to 'base' at step {step_idx} at temperature {base_inv_temperature}."
             )
             # Switch to the base model for proposal generation
             # NOTE: This is useful for the first few steps where the proposal model might not be
@@ -358,7 +360,7 @@ def generate(
         assert importance_weight_at_cur_step.shape == (num_particles,)
 
         _input_ids, indices = fk_class(
-            sample_idx=sample_idx,
+            step_idx=step_idx,
             sequences=_input_ids,
             importance_weights=importance_weight_at_cur_step,
         )
@@ -385,17 +387,9 @@ def generate(
         # change the input_ids and attention_mask to only include the resampled sequences
         _attention_mask = _attention_mask[indices]
         # update importance_weight_arr to only include the resampled sequences
-        for past_idx in range(len(importance_weight_arr)):
-            importance_weight_arr[past_idx] = importance_weight_arr[past_idx][indices]
+        for past_idx in range(step_idx + 1):
+            _completed_generation[past_idx] = _completed_generation[indices[past_idx]]
 
-        importance_weight_arr.append((base_logprobs - proposal_logprobs)[indices])
-
-    importance_weight_arr = torch.exp(torch.cat(importance_weight_arr, dim=1))
-    assert importance_weight_arr.shape == (num_particles, max_new_tokens), (
-        importance_weight_arr.shape,
-        num_particles,
-        max_new_tokens,
-    )
     responses = [
         tokenizer.decode(r, skip_special_tokens=True)
         for r in _input_ids[:, input_ids.shape[1] :]
@@ -495,7 +489,7 @@ def get_exp_args():
         "--num_particle_arr",
         type=int,
         nargs="+",
-        default=[100],
+        default=[500, 500, 500],
         help="Number of particles for each generation step.",
     )
     parser.add_argument(
@@ -543,7 +537,7 @@ def get_exp_args():
         resample_interval=10 if args.proposal_model == "base" else 20,
         lmbda=10 if args.proposal_model == "base" else 4,
         adaptive_resampling=True,
-        adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.1,
+        adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.4,
         base_inv_temperature=1.0,
         proposal_inv_temperature=1.0,
         proposal_model_switch_idx=None,
@@ -632,7 +626,6 @@ if __name__ == "__main__":
         example_model_logs["Forbidden prompt"] = forbidden_prompt
         example_model_logs["MC mean"] = example["harm_mean"]
         example_model_logs["MC var"] = example["harm_var"]
-        
 
         for num_particles_idx, num_particles in enumerate(args.num_particle_arr):
             convos = tokenizer.apply_chat_template(
@@ -648,7 +641,6 @@ if __name__ == "__main__":
             input_ids = inputs["input_ids"][:, 1:]
             attention_mask = inputs["attention_mask"][:, 1:]
 
-
             # Clear cache to avoid OOM errors
             gc.collect()
             torch.cuda.empty_cache()
@@ -661,7 +653,6 @@ if __name__ == "__main__":
 
             # Generate
             proposal_model = args.proposal_model
-
 
             print(f"Monte Carlo harm estimate: {float(np.mean(example['harm_mean']))}")
             outputs, harmfulness_estimate = generate(
@@ -684,15 +675,14 @@ if __name__ == "__main__":
                 adaptive_resampling_threshold=args.adaptive_resampling_threshold,
                 base_inv_temperature=args.base_inv_temperature,
                 proposal_inv_temperature=args.proposal_inv_temperature,
-                smc_verbose=args.smc_verbose,                
+                smc_verbose=args.smc_verbose,
             )
-
 
             arr_harmfullness_scores.append(harmfulness_estimate)
 
-            example_model_logs[f"new_harm_estimates_{num_particles}_{num_particles_idx}"] = (
-                harmfulness_estimate
-            )
+            example_model_logs[
+                f"new_harm_estimates_{num_particles}_{num_particles_idx}"
+            ] = harmfulness_estimate
 
         model_logs[example_idx] = example_model_logs
 

@@ -1,1 +1,1 @@
-python generate.py  --save_output
+python generate_and_judge.py  --save_output --use_smc

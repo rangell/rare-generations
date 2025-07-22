@@ -153,7 +153,7 @@ class FKSteering:
                 j += 1
         return indices
 
-    def compute_potential(self, sample_idx, sequence, rs_candidates):
+    def compute_potential(self, step_idx, sequence, rs_candidates):
         if self.potential_type == "r_fn":
             raise NotImplementedError("r_fn potential type not implemented")
         elif self.potential_type == "max":
@@ -163,7 +163,7 @@ class FKSteering:
             return torch.exp(self.lmbda * (rs_candidates - rs_old))
 
         elif self.potential_type == "bon":
-            if sample_idx == 0:
+            if step_idx == 0:
                 return torch.ones_like(rs_candidates)
         else:
             raise ValueError(f"Unknown potential type: {self.potential_type}")
@@ -177,14 +177,14 @@ class FKSteering:
 
         return arr_r_values, arr_potential_values
 
-    def __call__(self, sample_idx, sequences, importance_weights):
+    def __call__(self, step_idx, sequences, importance_weights):
 
         # collect product of importance_weights
         self.accum_importance_weights = (
             self.accum_importance_weights * importance_weights.view(self.num_particles)
         )
 
-        if sample_idx not in self.resampling_arr or not self.use_smc:
+        if step_idx not in self.resampling_arr or not self.use_smc:
             # If not resampling, just append one as potential values
             self.arr_potential_values.append(
                 torch.ones(self.num_particles, device=self.device)
@@ -196,20 +196,20 @@ class FKSteering:
 
         rs_candidates = self.r_fn(sequences)
 
-        # print(f"Sample {sample_idx}, r_fn candidates shape: {rs_candidates}")
+        # print(f"Sample {step_idx}, r_fn candidates shape: {rs_candidates}")
         if self.smc_verbose:
             print(
-                f"step {sample_idx}. r_fn candidates: {rs_candidates.mean().item()} +- {rs_candidates.std().item()}"
+                f"step {step_idx}. r_fn candidates: {rs_candidates.mean().item()} +- {rs_candidates.std().item()}"
             )
         assert rs_candidates.shape == (self.num_particles,), rs_candidates.shape
 
-        potential_values = self.compute_potential(sample_idx, sequences, rs_candidates)
+        potential_values = self.compute_potential(step_idx, sequences, rs_candidates)
         assert potential_values.shape == (self.num_particles,), potential_values.shape
 
         indices, potential_values = self.resampling_fn(
             potential_values=potential_values,
             importance_weights=self.accum_importance_weights,
-            step_idx=sample_idx,
+            step_idx=step_idx,
         )
 
         num_particles, seq_len = sequences.shape
@@ -264,7 +264,6 @@ class FKSteering:
 
         product_of_potentials = (
             torch.exp(torch.sum(torch.log(arr_potential_values), dim=1))
-            # * self.arr_importance_weights
         )
 
         # product_of_potentials = torch.prod(arr_potential_values  * importance_weight_arr, dim=1)
