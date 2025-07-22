@@ -274,7 +274,7 @@ class FKSteering:
         # assert product_of_potentials.shape == (self.num_particles,), (
         #     product_of_potentials.shape,
         # )
-        
+
         normalization_constant = torch.exp(
             torch.sum(torch.log(arr_potential_values.mean(dim=0)))
         )
@@ -320,13 +320,11 @@ class FKSteering:
             print(
                 f"FK estimate: {estimate}, Z: {Z}, inv_potential: {inv_potential.mean().item()}"
             )
-            # print("FK estimate diff", estimate_diff)
             print(
                 "test_fn values mean",
                 test_function_values.mean().item(),
                 test_function_values.std().item(),
             )
-            print("product_of_potentials", product_of_potentials.mean().item())
             print("importance_weight_arr", self.arr_importance_weights.mean().item())
             print("arr_potential_values", arr_potential_values.mean().item())
 
