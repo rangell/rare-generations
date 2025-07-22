@@ -317,6 +317,8 @@ def generate(
             # Compute logprobs of proposed next tokens with respect to the base model
             base_logprobs = torch.log_softmax(base_output.logits[:, -1, :], dim=-1)
             base_logprobs = torch.gather(base_logprobs, -1, next_tokens)
+            # import pdb; pdb.set_trace()
+            base_logprobs[_completed_generation] = 0
 
         elif (
             proposal_model == "base"
