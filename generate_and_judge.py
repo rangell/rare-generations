@@ -388,9 +388,8 @@ def generate(
 
         # change the input_ids and attention_mask to only include the resampled sequences
         _attention_mask = _attention_mask[indices]
-        # update importance_weight_arr to only include the resampled sequences
-        for past_idx in range(step_idx + 1):
-            _completed_generation[past_idx] = _completed_generation[indices[past_idx]]
+        # update _completed_generation to only include the resampled sequences
+        _completed_generation = _completed_generation[indices]
 
     responses = [
         tokenizer.decode(r, skip_special_tokens=True)
@@ -539,7 +538,7 @@ def get_exp_args():
         resample_interval=10 if args.proposal_model == "base" else 20,
         lmbda=10 if args.proposal_model == "base" else 4,
         adaptive_resampling=True,
-        adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.4,
+        adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.5,
         base_inv_temperature=1.0,
         proposal_inv_temperature=1.0,
         proposal_model_switch_idx=None,
