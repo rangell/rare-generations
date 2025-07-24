@@ -29,7 +29,7 @@ from strong_reject.evaluate import strongreject_rubric
 from datasets import load_dataset
 
 
-def load_model_and_tokenizer(model_name_or_path, device="cuda:0"):
+def load_model_and_tokenizer(model_name_or_path):
     # NOTE: returns model in `eval` mode
     config = AutoConfig.from_pretrained(
         model_name_or_path, output_hidden_states=True, return_dict_in_generate=True
@@ -42,7 +42,7 @@ def load_model_and_tokenizer(model_name_or_path, device="cuda:0"):
         model_name_or_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        device_map=device,
+        device_map="auto",
         token=os.getenv("HF_TOKEN"),
         config=config,
         trust_remote_code=True,
@@ -72,7 +72,7 @@ def load_refusal_direction(refusal_direction_path):
 
 
 def get_all_direction_ablation_hooks(model, direction: Float[Tensor, "d_model"], ablation_intensity: float = 1.0):
-    # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
+    # NOTE: Should work for Gemma and Llama models (should be able to just change the following three variables for other models)
     model_block_modules = model.model.layers
     model_attn_modules = torch.nn.ModuleList(
         [block_module.self_attn for block_module in model_block_modules]
@@ -187,7 +187,7 @@ def create_reward_fn(
         for b_input_ids in _input_ids.chunk(num_chunks):
             batch_scores = sr_harmful_reward_fn(
                     forbidden_prompt,
-                    tokenizer.batch_decode(b_input_ids[:, prompt_len:]),
+                    tokenizer.batch_decode(b_input_ids[:, prompt_len:], skip_special_tokens=True),
             )
             all_scores.append(batch_scores)
         return torch.cat(all_scores)
@@ -239,7 +239,7 @@ def generate(
     num_particles,
     use_smc: bool,
     fwd_pre_hooks=[],
-    proposal_inv_temperature=3.5,
+    proposal_inv_temperature=1.0,
     fwd_hooks=[],
     max_new_tokens: int = 10,
     decoding: str = "sample",  # Options: 'greedy', 'sample', 'beam_search', 'top_k', 'top_p'
@@ -270,11 +270,7 @@ def generate(
 
     fk_class = FKSteering(
         device=model.device,
-        r_fn=lambda x: sr_harmful_reward_fn(
-            forbidden_prompt=forbidden_prompt,
-            responses=tokenizer.batch_decode(x[:, prompt_len:]),
-            device="cuda:1",
-        ).to(model.device),
+        r_fn=r_fn,
         potential_type="diff",
         max_seq_len=max_new_tokens,
         num_particles=num_particles,
@@ -297,7 +293,7 @@ def generate(
             and proposal_model_switch_idx is not None
         ):
             print(
-                f"Switching proposal model to 'base' at step {sample_idx} at temperature {base_inv_temperature}."
+                f"Switching proposal model to 'base' at step {step_idx} at temperature {base_inv_temperature}."
             )
             # Switch to the base model for proposal generation
             # NOTE: This is useful for the first few steps where the proposal model might not be
@@ -488,8 +484,8 @@ def get_exp_args():
         resample_start=10 if args.proposal_model == "base" else 10,
         resample_end=args.max_new_tokens - 10,
         resample_interval=10 if args.proposal_model == "base" else 20,
-        lmbda=10 if args.proposal_model == "base" else 4,
         adaptive_resampling=True,
+        lmbda=10 if args.proposal_model == "base" else 4,
         adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.5,
         base_inv_temperature=1.0,
         proposal_inv_temperature=1.0,
@@ -547,8 +543,9 @@ if __name__ == "__main__":
     refusal_direction = load_refusal_direction(refusal_direction_path)
 
     # Construct torch hooks for ablating refusal
+    ablation_intensity = 1.0
     ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(
-        model, refusal_direction["direction"]
+        model, refusal_direction["direction"], ablation_intensity=ablation_intensity
     )
 
     # Create the forward wrappers
@@ -607,7 +604,7 @@ if __name__ == "__main__":
                 tokenizer=tokenizer,
                 forbidden_prompt=forbidden_prompt,
                 prompt_len=input_ids.shape[1],
-                batch_size=128,
+                batch_size=64,
             )
 
             # Clear cache to avoid OOM errors
@@ -618,7 +615,7 @@ if __name__ == "__main__":
             model.eval()
             # NOTE: This is important to avoid OOM errors
 
-            print(f"Forbidden prompt: {forbidden_prompt}")
+            print(f"\n\nForbidden prompt: {forbidden_prompt}")
             print(f"Monte Carlo harm estimate: {example['harm_mean']}")
             print(f"Monte Carlo harm variance: {example['harm_var']}")
 

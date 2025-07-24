@@ -137,7 +137,7 @@ def calculate_harmful_reward(
     return scores
 
 
-def sr_harmful_reward_fn(forbidden_prompt, responses, device, batch_size=50):
+def sr_harmful_reward_fn(forbidden_prompt, responses, batch_size=50):
     model_name = "qylu4156/strongreject-15k-v1"
 
     # cache the reward model
@@ -145,7 +145,7 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, device, batch_size=50):
         # load model
         try:
             model = AutoModelForCausalLM.from_pretrained(
-                model_name, device_map=device, torch_dtype=torch.bfloat16
+                model_name, device_map="auto", torch_dtype=torch.bfloat16
             )
         except:
             model = AutoModelForCausalLM.from_pretrained(model_name, device_map=device)
@@ -162,7 +162,6 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, device, batch_size=50):
         MODELS[model_name] = (model, tokenizer)
 
     model, tokenizer = MODELS[model_name]
-    model = model.to(device)
 
     judge_prompts = [
         JUDGE_PROMPT_TEMPLATE.format(forbidden_prompt=forbidden_prompt, response=r)
