@@ -74,7 +74,9 @@ def load_refusal_direction(refusal_direction_path):
 
 
 def get_all_direction_ablation_hooks(
-    model, direction: Float[Tensor, "d_model"], ablation_intensity: float,
+    model,
+    direction: Float[Tensor, "d_model"],
+    ablation_intensity: float,
 ):
     # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
     model_block_modules = model.model.layers
@@ -259,7 +261,32 @@ def token_sampler(decoding, proposal_output, proposal_inv_temperature):
     return next_tokens
 
 
+def update_cache_after_resampling(
+    past_key_values: DynamicCache, indices: torch.Tensor, model_config
+):
+    new_past_key_values = DynamicCache()
+    for layer_idx in range(model_config.num_hidden_layers):
+
+        keys, values = past_key_values[layer_idx]
+        resampled_keys = keys[indices].clone()
+        resampled_values = values[indices].clone()
+        # past_key_values[layer_idx] = (keys, values)
+        new_past_key_values.update(resampled_keys, resampled_values, layer_idx)
+
+        del keys, values, resampled_keys, resampled_values
+
+        if layer_idx % 4 == 0:
+            torch.cuda.empty_cache()
+    del past_key_values
+    past_key_values = new_past_key_values
+    torch.cuda.empty_cache()
+
+    return past_key_values
+
+
 def generate(
+    model_config,
+    base_model_config,
     base_forward,
     proposal_forward,
     r_fn,
@@ -300,8 +327,10 @@ def generate(
         cache_position = torch.arange(
             input_ids.shape[1], dtype=torch.int64, device=model.device
         )
-        base_cache_position = cache_position.clone()
-        base_key_values = past_key_values if proposal_forward == base_forward else None
+        base_cache_position = torch.arange(
+            input_ids.shape[1], dtype=torch.int64, device=model.device
+        )
+        base_key_values = DynamicCache()
     else:
         past_key_values = None
         cache_position = None
@@ -339,13 +368,14 @@ def generate(
             step_idx == proposal_model_switch_idx
             and proposal_model_switch_idx is not None
         ):
-            print(
-                f"Switching proposal model to 'base' at step {sample_idx} at temperature {base_inv_temperature}."
-            )
-            # Switch to the base model for proposal generation
-            # NOTE: This is useful for the first few steps where the proposal model might not be
-            proposal_forward = base_forward
-            proposal_inv_temperature = base_inv_temperature
+            raise NotImplementedError
+            # print(
+            #     f"Switching proposal model to 'base' at step {sample_idx} at temperature {base_inv_temperature}."
+            # )
+            # # Switch to the base model for proposal generation
+            # # NOTE: This is useful for the first few steps where the proposal model might not be
+            # proposal_forward = base_forward
+            # proposal_inv_temperature = base_inv_temperature
 
         ret = proposal_forward(
             _input_ids=_input_ids,
@@ -373,14 +403,21 @@ def generate(
                 _attention_mask=_attention_mask,
                 _completed_generation=_completed_generation,
                 decoding=decoding,
-                inv_temperature=proposal_inv_temperature,
-                past_key_values=None,
-                use_cache=False,
-                cache_position=None,
+                inv_temperature=base_inv_temperature,
+                use_cache=use_cache,
+                past_key_values=base_key_values,
+                cache_position=base_cache_position,
             )
-            logprobs_distribution, *_ = base_ret
 
-            base_logprobs = torch.gather(logprobs_distribution, -1, next_tokens)
+            (
+                base_logprobs_distribution,
+                _,
+                _,
+                _,
+                base_cache_position,
+                base_key_values,
+            ) = base_ret
+            base_logprobs = torch.gather(base_logprobs_distribution, -1, next_tokens)
         else:
             base_logprobs = proposal_logprobs.clone()
 
@@ -393,42 +430,43 @@ def generate(
         importance_weight_at_cur_step = torch.exp(
             base_logprobs - proposal_logprobs
         ).view(num_particles)
-        assert importance_weight_at_cur_step.shape == (num_particles,)
-
+        assert importance_weight_at_cur_step.shape == (num_particles,)    
         _input_ids, indices = fk_class(
             step_idx=step_idx,
             sequences=_input_ids,
             importance_weights=importance_weight_at_cur_step,
         )
-        if base_key_values is not None:
-            assert len(past_key_values) == model.config.num_hidden_layers, (
-                len(past_key_values),
-                model.config.num_hidden_layers,
-            )
 
-        if torch.all(indices == torch.arange(num_particles, device=_input_ids.device)).item():
+        if not use_smc:
             # No resampling needed, just continue
-            continue
+            pass
+        elif (
+            use_smc
+            and torch.all(
+                indices == torch.arange(num_particles, device=_input_ids.device)
+            ).item()
+        ):
+            # No resampling needed, just continue
+            if smc_verbose:
+                print("No resampling needed, all particles are kept.")
+            pass
+        elif use_smc:
+            # raise NotImplementedError("change base as well")
+            past_key_values = update_cache_after_resampling(
+                past_key_values=past_key_values,
+                indices=indices,
+                model_config=model_config,
+            )
+            base_key_values = update_cache_after_resampling(
+                past_key_values=base_key_values,
+                indices=indices,
+                model_config=base_model_config,
+            )
         else:
-            new_past_key_values = DynamicCache()
-            for layer_idx in range(model.config.num_hidden_layers):
-
-                keys, values = past_key_values[layer_idx]
-                resampled_keys = keys[indices].clone()
-                resampled_values = values[indices].clone()
-                # past_key_values[layer_idx] = (keys, values)
-                new_past_key_values.update(resampled_keys, resampled_values, layer_idx)
-
-                del keys, values, resampled_keys, resampled_values
-                
-                if layer_idx % 4 == 0:
-                    torch.cuda.empty_cache()
-            del past_key_values
-            past_key_values = new_past_key_values        
-            torch.cuda.empty_cache()
+            raise ValueError("Unknown resampling strategy.")
 
         importance_weights = importance_weights[indices] * torch.exp(
-            base_logprobs - proposal_logprobs
+            base_logprobs[indices] - proposal_logprobs[indices]
         ).view(num_particles)
 
         assert torch.all(
@@ -454,7 +492,7 @@ def generate(
         for r in _input_ids[:, input_ids.shape[1] :]
     ]
 
-    print("Sequence generated: ", responses[0])
+    print("Sequence generated: ", responses[0], "with score: ", judge_scores[0].item())
 
     assert judge_scores.shape == (num_particles,), (
         judge_scores.shape,
@@ -467,7 +505,9 @@ def generate(
         # import pdb; pdb.set_trace()
         sis_approx_harm_score = reweighted_scores.mean().item()
         sis_approx_harm_variance = reweighted_scores.var().item()
-        print(f"SIS harm score estimate: {sis_approx_harm_score}")
+        print(
+            f"SIS harm score estimate: {sis_approx_harm_score}, importance weights: {importance_weights.mean().item()}"
+        )
         print(f"SIS harm score variance: {sis_approx_harm_variance}")
 
         # biased_sis_approx_harm_variance = biased_reweighted_scores.var().item()
@@ -528,7 +568,7 @@ def get_exp_args():
         "--num_particle_arr",
         type=int,
         nargs="+",
-        default=[100, 500, 500],
+        default=[500],
         help="Number of particles for each generation step.",
     )
     parser.add_argument(
@@ -652,7 +692,7 @@ if __name__ == "__main__":
         model=base_model,
         tokenizer=base_tokenizer,
     )
-    
+
     if args.proposal_model == "toxic_model":
         proposal_forward = create_model_wrapper(
             model=model,
@@ -721,6 +761,8 @@ if __name__ == "__main__":
 
             # Generate
             outputs, harmfulness_estimate = generate(
+                model_config=model.config,
+                base_model_config=base_model.config,
                 base_forward=base_forward,
                 proposal_forward=proposal_forward,
                 r_fn=r_fn,
@@ -754,7 +796,7 @@ if __name__ == "__main__":
         model_logs[example_idx] = example_model_logs
 
         print(
-            f"Monte Carlo harm estimates for {forbidden_prompt}: {arr_harmfulness_scores}"
+            f"New Monte Carlo harm estimates for {forbidden_prompt}: {arr_harmfulness_scores}"
         )
 
         if args.save_output:
