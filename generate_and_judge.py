@@ -37,6 +37,8 @@ def load_model_and_tokenizer(model_name_or_path, device="cuda:0"):
 
     if isinstance(config, Qwen2Config):
         config = None
+    elif model_name_or_path.startswith("GraySwanAI/Llama-3-8B-Instruct-RR"):
+        config = None
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
@@ -72,7 +74,7 @@ def load_refusal_direction(refusal_direction_path):
 
 
 def get_all_direction_ablation_hooks(
-    model, direction: Float[Tensor, "d_model"], ablation_intensity: float = 1.0
+    model, direction: Float[Tensor, "d_model"], ablation_intensity: float,
 ):
     # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
     model_block_modules = model.model.layers
@@ -472,11 +474,6 @@ def generate(
         print(f"Judge scores: {judge_scores.mean()} ± {judge_scores.std()}")
         # print(f"Biased SIS harm score variance: {biased_sis_approx_harm_variance}")
 
-        # print(
-        #     "Sequence generated:",
-        #     tokenizer.decode(_input_ids[0], skip_special_tokens=False),
-        # )
-
         return _input_ids, sis_approx_harm_score
     else:
         fk_estimate = fk_class.compute_fk_estimate(
@@ -531,7 +528,7 @@ def get_exp_args():
         "--num_particle_arr",
         type=int,
         nargs="+",
-        default=[500, 500, 500],
+        default=[100, 500, 500],
         help="Number of particles for each generation step.",
     )
     parser.add_argument(
@@ -581,7 +578,7 @@ def get_exp_args():
         decoding="sample",
         resample_start=10 if args.proposal_model == "base" else 10,
         resample_end=args.max_new_tokens - 10,
-        resample_interval=10 if args.proposal_model == "base" else 20,
+        resample_interval=10 if args.proposal_model == "base" else 10,
         lmbda=10 if args.proposal_model == "base" else 4,
         adaptive_resampling=True,
         adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.5,
@@ -648,9 +645,12 @@ if __name__ == "__main__":
     )
 
     # Create the forward wrappers
+    base_model, base_tokenizer = load_model_and_tokenizer(
+        "GraySwanAI/Llama-3-8B-Instruct-RR",
+    )
     base_forward = create_model_wrapper(
-        model=model,
-        tokenizer=tokenizer,
+        model=base_model,
+        tokenizer=base_tokenizer,
     )
     
     if args.proposal_model == "toxic_model":

@@ -1,6 +1,7 @@
 # Load model directly
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+
 tokenizer = AutoTokenizer.from_pretrained("GraySwanAI/Llama-3-8B-Instruct-RR")
 model = AutoModelForCausalLM.from_pretrained("GraySwanAI/Llama-3-8B-Instruct-RR")
 messages = [

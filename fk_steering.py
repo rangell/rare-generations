@@ -252,7 +252,7 @@ class FKSteering:
             self.num_particles, device=self.device
         )
 
-        return resampled_sequence, indices
+        return resampled_sequence, torch.tensor(indices).to(self.device)
 
     def compute_fk_estimate(self, test_function_values):
         assert self.potential_type == "diff"
