@@ -106,8 +106,8 @@ def get_all_direction_ablation_hooks(model, direction: Float[Tensor, "d_model"],
     return fwd_pre_hooks, fwd_hooks
 
 
-def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
 
+def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[], enable_adapter=False):
     def model_forward(
         _input_ids,
         _attention_mask,
@@ -122,12 +122,16 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
             pad_token_id=tokenizer.pad_token_id,
             output_scores=True,
             return_dict_in_generate=True,
-            output_hidden_states=False,        
+            output_hidden_states=False,
         )
 
-        if len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
-            # Use the base model to generate the proposal distribution
+        if isinstance(model.active_adapters, list) and not enable_adapter:
+            with torch.no_grad(), model.disable_adapter():
+                output = model.forward(**model_inputs)
+        elif len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
+            # Use the base model to generate the proposal distribution or enabled LoRA adapter
             # NOTE: This is the default behavior, so we can skip adding hooks
+            assert enable_adapter or not isinstance(model.active_adapters, list)
             with torch.no_grad():
                 output = model.forward(**model_inputs)
         elif len(fwd_pre_hooks) > 0 and len(fwd_hooks) > 0:
@@ -148,7 +152,7 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
             proposal_inv_temperature=inv_temperature,
         )
         next_token_logprobs = torch.gather(
-            logprobs_distribution, -1, next_tokens.unsqueeze(-1)
+            logprobs_distribution * inv_temperature, -1, next_tokens.unsqueeze(-1)
         ).squeeze(-1)
         
         assert next_token_logprobs.shape == (logprobs_distribution.shape[0],)
@@ -233,14 +237,14 @@ def token_sampler(decoding, proposal_output, proposal_inv_temperature):
 def generate(
     base_forward,
     proposal_forward,
+    tokenizer,
     r_fn,
+    forbidden_prompt,
     input_ids,
     attention_mask,
     num_particles,
     use_smc: bool,
-    fwd_pre_hooks=[],
     proposal_inv_temperature=1.0,
-    fwd_hooks=[],
     max_new_tokens: int = 10,
     decoding: str = "sample",  # Options: 'greedy', 'sample', 'beam_search', 'top_k', 'top_p'
     proposal_model="toxic_model",  # Options: 'base', 'toxic_model'
@@ -257,19 +261,17 @@ def generate(
 ):
     """Implements simple greedy decoding."""
 
-    model.eval()  # Ensure model is in eval mode
-
     _input_ids = input_ids.detach().clone()
     _attention_mask = attention_mask.detach().clone()
     _completed_generation = torch.zeros((num_particles, 1), dtype=torch.bool).to(
-        model.device
+        _input_ids.device
     )
 
     assert _input_ids.shape[0] == num_particles, (_input_ids.shape[0], num_particles)
     prompt_len = len(_input_ids[0])
 
     fk_class = FKSteering(
-        device=model.device,
+        device=_input_ids.device,
         r_fn=r_fn,
         potential_type="diff",
         max_seq_len=max_new_tokens,
@@ -485,11 +487,11 @@ def get_exp_args():
         resample_end=args.max_new_tokens - 10,
         resample_interval=10 if args.proposal_model == "base" else 20,
         adaptive_resampling=True,
-        lmbda=10 if args.proposal_model == "base" else 4,
-        adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.5,
+        lmbda=10 if args.proposal_model == "base" else 10,
         base_inv_temperature=1.0,
+        adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.5,
         proposal_inv_temperature=1.0,
-        proposal_model_switch_idx=None,
+        proposal_model_switch_idx=20,
     )
 
     metadata = {**smc_args, **vars(args)}
@@ -543,7 +545,7 @@ if __name__ == "__main__":
     refusal_direction = load_refusal_direction(refusal_direction_path)
 
     # Construct torch hooks for ablating refusal
-    ablation_intensity = 1.0
+    ablation_intensity = 0.8
     ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(
         model, refusal_direction["direction"], ablation_intensity=ablation_intensity
     )
@@ -570,6 +572,10 @@ if __name__ == "__main__":
     max_new_tokens = args.max_new_tokens  # 150
     model_logs = {}
     for example_idx, example in enumerate(mc_dataset):
+
+        if example['harm_mean'] == 0.0:
+            continue
+
         example_model_logs = {}
         forbidden_prompt = example["forbidden_prompt"]
         messages = [
@@ -604,7 +610,7 @@ if __name__ == "__main__":
                 tokenizer=tokenizer,
                 forbidden_prompt=forbidden_prompt,
                 prompt_len=input_ids.shape[1],
-                batch_size=64,
+                batch_size=128,
             )
 
             # Clear cache to avoid OOM errors
@@ -626,8 +632,6 @@ if __name__ == "__main__":
                 r_fn=r_fn,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                fwd_pre_hooks=ablation_fwd_pre_hooks,
-                fwd_hooks=ablation_fwd_hooks,
                 num_particles=num_particles,
                 max_new_tokens=max_new_tokens,
                 decoding="sample",  # Change to 'greedy' if you want to use greedy decoding
