@@ -14,7 +14,7 @@ import functools
 from tqdm.auto import tqdm
 import torch
 from torch import Tensor
-from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, DynamicCache
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 
 from refusal_direction.pipeline.utils.hook_utils import (
@@ -71,7 +71,9 @@ def load_refusal_direction(refusal_direction_path):
     return metadata
 
 
-def get_all_direction_ablation_hooks(model, direction: Float[Tensor, "d_model"], ablation_intensity: float = 1.0):
+def get_all_direction_ablation_hooks(
+    model, direction: Float[Tensor, "d_model"], ablation_intensity: float = 1.0
+):
     # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
     model_block_modules = model.model.layers
     model_attn_modules = torch.nn.ModuleList(
@@ -84,21 +86,27 @@ def get_all_direction_ablation_hooks(model, direction: Float[Tensor, "d_model"],
     fwd_pre_hooks = [
         (
             model_block_modules[layer],
-            get_direction_ablation_input_pre_hook(direction=direction, ablation_intensity=ablation_intensity),
+            get_direction_ablation_input_pre_hook(
+                direction=direction, ablation_intensity=ablation_intensity
+            ),
         )
         for layer in range(model.config.num_hidden_layers)
     ]
     fwd_hooks = [
         (
             model_attn_modules[layer],
-            get_direction_ablation_output_hook(direction=direction, ablation_intensity=ablation_intensity),
+            get_direction_ablation_output_hook(
+                direction=direction, ablation_intensity=ablation_intensity
+            ),
         )
         for layer in range(model.config.num_hidden_layers)
     ]
     fwd_hooks += [
         (
             model_mlp_modules[layer],
-            get_direction_ablation_output_hook(direction=direction, ablation_intensity=ablation_intensity),
+            get_direction_ablation_output_hook(
+                direction=direction, ablation_intensity=ablation_intensity
+            ),
         )
         for layer in range(model.config.num_hidden_layers)
     ]
@@ -114,15 +122,27 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
         _completed_generation,
         decoding,
         inv_temperature,
+        cache_position=None,
+        past_key_values=None,
+        use_cache=False,
     ):
+        if cache_position is not None and len(cache_position) == 1:
+            cache_input_ids = _input_ids[:, -1].unsqueeze(
+                1
+            )  # Get the last token for generation
+        else:
+            cache_input_ids = _input_ids
         model_inputs = dict(
-            input_ids=_input_ids,
+            input_ids=cache_input_ids,  # Get the last token for generation
             attention_mask=_attention_mask,
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.pad_token_id,
             output_scores=True,
             return_dict_in_generate=True,
-            output_hidden_states=False,        
+            output_hidden_states=False,
+            past_key_values=past_key_values,
+            cache_position=cache_position,
+            use_cache=use_cache,
         )
 
         if len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
@@ -150,9 +170,9 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
         next_token_logprobs = torch.gather(
             logprobs_distribution, -1, next_tokens.unsqueeze(-1)
         ).squeeze(-1)
-        
+
         assert next_token_logprobs.shape == (logprobs_distribution.shape[0],)
-        
+
         # Ensure next_tokens is of shape (num_particles, 1)
         next_tokens = next_tokens.unsqueeze(-1)
 
@@ -165,14 +185,24 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
         # Ensure proposal_logprobs is of shape (num_particles, 1)
         next_token_logprobs = next_token_logprobs.unsqueeze(-1)
 
+        # Update cache position
+        if use_cache:
+            cache_position = cache_position[-1:] + 1
+
         # Clear cache to avoid OOM errors
         gc.collect()
         torch.cuda.empty_cache()
 
-        return logprobs_distribution, next_tokens, next_token_logprobs, _completed_generation
+        return (
+            logprobs_distribution,
+            next_tokens,
+            next_token_logprobs,
+            _completed_generation,
+            cache_position,
+            past_key_values,
+        )
 
     return model_forward
-
 
 
 def create_reward_fn(
@@ -186,8 +216,8 @@ def create_reward_fn(
         all_scores = []
         for b_input_ids in _input_ids.chunk(num_chunks):
             batch_scores = sr_harmful_reward_fn(
-                    forbidden_prompt,
-                    tokenizer.batch_decode(b_input_ids[:, prompt_len:]),
+                forbidden_prompt,
+                tokenizer.batch_decode(b_input_ids[:, prompt_len:]),
             )
             all_scores.append(batch_scores)
         return torch.cat(all_scores)
@@ -196,10 +226,7 @@ def create_reward_fn(
 
 
 def score_responses(
-    tokenizer,
-    forbidden_prompt: str,
-    input_ids: torch.Tensor,
-    n_jobs: int = 50
+    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50
 ):
     scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
     responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
@@ -254,6 +281,7 @@ def generate(
     base_inv_temperature=1.0,
     smc_verbose=False,
     importance_resampling_at_last_step=False,
+    use_cache=False,
 ):
     """Implements simple greedy decoding."""
 
@@ -264,6 +292,19 @@ def generate(
     _completed_generation = torch.zeros((num_particles, 1), dtype=torch.bool).to(
         model.device
     )
+
+    if use_cache:
+        past_key_values = DynamicCache()
+        cache_position = torch.arange(
+            input_ids.shape[1], dtype=torch.int64, device=model.device
+        )
+        base_cache_position = cache_position.clone()
+        base_key_values = past_key_values if proposal_forward == base_forward else None
+    else:
+        past_key_values = None
+        cache_position = None
+        base_cache_position = None
+        base_key_values = None
 
     assert _input_ids.shape[0] == num_particles, (_input_ids.shape[0], num_particles)
     prompt_len = len(_input_ids[0])
@@ -289,7 +330,7 @@ def generate(
         importance_resampling_at_last_step=importance_resampling_at_last_step,
     )
     # Main generation loop
-    importance_weights = torch.ones(num_particles, device=_input_ids.device)     
+    importance_weights = torch.ones(num_particles, device=_input_ids.device)
     for step_idx in tqdm(range(max_new_tokens)):
 
         if (
@@ -304,36 +345,48 @@ def generate(
             proposal_forward = base_forward
             proposal_inv_temperature = base_inv_temperature
 
-        _, next_tokens, proposal_logprobs, _completed_generation = proposal_forward(
+        ret = proposal_forward(
             _input_ids=_input_ids,
             _attention_mask=_attention_mask,
             _completed_generation=_completed_generation,
             decoding=decoding,
             inv_temperature=proposal_inv_temperature,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
         )
 
+        (
+            _,
+            next_tokens,
+            proposal_logprobs,
+            _completed_generation,
+            cache_position,
+            past_key_values,
+        ) = ret
+
         if proposal_forward != base_forward:
-            logprobs_distribution, _, _, _ = base_forward(
+            base_ret = base_forward(
                 _input_ids=_input_ids,
                 _attention_mask=_attention_mask,
                 _completed_generation=_completed_generation,
                 decoding=decoding,
                 inv_temperature=proposal_inv_temperature,
+                past_key_values=None,
+                use_cache=False,
+                cache_position=None,
             )
-            base_logprobs = torch.gather(
-                logprobs_distribution, -1, next_tokens
-            )
+            logprobs_distribution, *_ = base_ret
+
+            base_logprobs = torch.gather(logprobs_distribution, -1, next_tokens)
         else:
             base_logprobs = proposal_logprobs.clone()
-            
+
         # Update input arguments
         _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
         _attention_mask = torch.cat(
             (_attention_mask, torch.ones_like(next_tokens)), dim=1
         )
-
-        # NOTE: The following line is important to ensure that the input_ids and attention_mask are of the correct shape
-        # NOTE: do not remove this line as we accumulate the product of importance weights
 
         importance_weight_at_cur_step = torch.exp(
             base_logprobs - proposal_logprobs
@@ -345,6 +398,32 @@ def generate(
             sequences=_input_ids,
             importance_weights=importance_weight_at_cur_step,
         )
+        if base_key_values is not None:
+            assert len(past_key_values) == model.config.num_hidden_layers, (
+                len(past_key_values),
+                model.config.num_hidden_layers,
+            )
+
+        if torch.all(indices == torch.arange(num_particles, device=_input_ids.device)).item():
+            # No resampling needed, just continue
+            continue
+        else:
+            new_past_key_values = DynamicCache()
+            for layer_idx in range(model.config.num_hidden_layers):
+
+                keys, values = past_key_values[layer_idx]
+                resampled_keys = keys[indices].clone()
+                resampled_values = values[indices].clone()
+                # past_key_values[layer_idx] = (keys, values)
+                new_past_key_values.update(resampled_keys, resampled_values, layer_idx)
+
+                del keys, values, resampled_keys, resampled_values
+                
+                if layer_idx % 4 == 0:
+                    torch.cuda.empty_cache()
+            del past_key_values
+            past_key_values = new_past_key_values        
+            torch.cuda.empty_cache()
 
         importance_weights = importance_weights[indices] * torch.exp(
             base_logprobs - proposal_logprobs
@@ -363,12 +442,9 @@ def generate(
         # update _completed_generation to only include the resampled sequences
         _completed_generation = _completed_generation[indices]
 
-
     # Judge the responses
     judge_scores = score_responses(
-        tokenizer,
-        forbidden_prompt,
-        input_ids=_input_ids[:, input_ids.shape[1]:]
+        tokenizer, forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :]
     )
 
     responses = [
@@ -433,6 +509,19 @@ def get_exp_args():
         "--seed", type=int, default=42, help="Random seed for reproducibility."
     )
     parser.add_argument(
+        "--dataset",
+        type=str,
+        default="strong_reject",
+        choices=["strong_reject"],
+        help="Dataset to use for generation.",
+    )
+    parser.add_argument(
+        "--ablation_intensity",
+        type=float,
+        default=0.3,
+        help="Intensity of the ablation.",
+    )
+    parser.add_argument(
         "--max_new_tokens",
         type=int,
         default=100,
@@ -463,6 +552,11 @@ def get_exp_args():
         type=str,
         default="meta-llama/Llama-3.2-1B-Instruct",
         help="which model to score.",
+    )
+    parser.add_argument(
+        "--use_cache",
+        action="store_true",
+        help="Whether to use cache for generation.",
     )
     parser.add_argument(
         "--save_output",
@@ -548,7 +642,9 @@ if __name__ == "__main__":
 
     # Construct torch hooks for ablating refusal
     ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(
-        model, refusal_direction["direction"]
+        model,
+        refusal_direction["direction"],
+        ablation_intensity=args.ablation_intensity,
     )
 
     # Create the forward wrappers
@@ -556,19 +652,21 @@ if __name__ == "__main__":
         model=model,
         tokenizer=tokenizer,
     )
+    
     if args.proposal_model == "toxic_model":
         proposal_forward = create_model_wrapper(
             model=model,
             tokenizer=tokenizer,
             fwd_pre_hooks=ablation_fwd_pre_hooks,
-            fwd_hooks=ablation_fwd_hooks
+            fwd_hooks=ablation_fwd_hooks,
         )
     else:
         proposal_forward = base_forward
 
-    mc_dataset = load_dataset("json", data_files=f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_{args.model_name.split('/')[1]}.json")[
-        "train"
-    ]
+    mc_dataset = load_dataset(
+        "json",
+        data_files=f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_{args.model_name.split('/')[1]}.json",
+    )["train"]
 
     max_new_tokens = args.max_new_tokens  # 150
     model_logs = {}
@@ -582,7 +680,6 @@ if __name__ == "__main__":
             },
         ]
         arr_harmfulness_scores = []
-
 
         example_model_logs["Forbidden prompt"] = forbidden_prompt
         example_model_logs["MC mean"] = example["harm_mean"]
@@ -645,6 +742,7 @@ if __name__ == "__main__":
                 base_inv_temperature=args.base_inv_temperature,
                 proposal_inv_temperature=args.proposal_inv_temperature,
                 smc_verbose=args.smc_verbose,
+                use_cache=args.use_cache,
             )
 
             arr_harmfulness_scores.append(harmfulness_estimate)
