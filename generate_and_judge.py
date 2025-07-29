@@ -613,7 +613,7 @@ def get_exp_args():
     parser.add_argument(
         "--cheap_judge",
         action="store_true",
-        default=False
+        default=False,
         help="Whether to use a cheap judge for scoring.",
     )
     parser.add_argument(
