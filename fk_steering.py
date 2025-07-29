@@ -48,13 +48,11 @@ class FKSteering:
         # )
 
         self.resampling_arr = self.resampling_arr - 1
-
-        print("Resampling steps:", self.resampling_arr.tolist())
-        print("Not resampling at last step:")
         self.resampling_arr = self.resampling_arr.to(device)
 
-        if self.smc_verbose:
-            print(f"Resampling steps: {self.resampling_arr.tolist()}")
+        if smc_verbose:
+            print("Resampling steps:", self.resampling_arr.tolist())
+            print("Not resampling at last step:")        
 
         self.potential_type = potential_type
         assert potential_type in ["r_fn", "max", "diff", "bon"], potential_type

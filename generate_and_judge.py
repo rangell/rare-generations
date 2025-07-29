@@ -1,6 +1,7 @@
 import gc
 import numpy as np
 from jaxtyping import Float
+from pathlib import Path
 import json
 import os
 from joblib import Parallel, delayed
@@ -447,8 +448,6 @@ def generate(
             ).item()
         ):
             # No resampling needed, just continue
-            if smc_verbose:
-                print("No resampling needed, all particles are kept.")
             pass
         elif use_smc:
             # raise NotImplementedError("change base as well")
@@ -555,7 +554,7 @@ def get_exp_args():
     parser.add_argument(
         "--ablation_intensity",
         type=float,
-        default=0.3,
+        default=0.5,
         help="Intensity of the ablation.",
     )
     parser.add_argument(
@@ -568,7 +567,7 @@ def get_exp_args():
         "--num_particle_arr",
         type=int,
         nargs="+",
-        default=[500],
+        default=[1000],
         help="Number of particles for each generation step.",
     )
     parser.add_argument(
@@ -589,6 +588,12 @@ def get_exp_args():
         type=str,
         default="meta-llama/Llama-3.2-1B-Instruct",
         help="which model to score.",
+    )    
+    parser.add_argument(
+        "--model_idx",
+        type=int,
+        default=0,
+        help="Index of the model to use",
     )
     parser.add_argument(
         "--use_cache",
@@ -660,6 +665,27 @@ def get_exp_args():
 
     return combined_args, output_dir
 
+def get_model_name(args):
+    if args.model_idx == 0:
+        args.model_name = "meta-llama/Llama-3.2-1B-Instruct"
+        args.base_model_name = None
+    elif args.model_idx == 1:
+        args.model_name = "meta-llama/meta-llama-3-8b-instruct"
+        args.base_model_name = None
+    elif args.model_idx == 2:
+        args.model_name = "google/gemma-2-9b-it"
+        args.base_model_name = None
+    elif args.model_idx == 3:
+        args.model_name = "google/gemma-2-2b-it"
+        args.base_model_name = None
+    elif args.model_idx == 4:
+        args.base_model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
+        args.model_name = "meta-llama/meta-llama-3-8b-instruct"
+    else:
+        raise ValueError(f"Unknown model index {args.model_idx}. Please choose a valid model index.")
+    
+    return args
+
 
 if __name__ == "__main__":
 
@@ -670,6 +696,7 @@ if __name__ == "__main__":
     refusal_direction_path = (
         f"refusal_direction/pipeline/runs/{args.model_name.split('/')[1]}/"
     )
+    assert Path(refusal_direction_path).exists(), (refusal_direction_path)
 
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(model_name_or_path)
@@ -685,9 +712,13 @@ if __name__ == "__main__":
     )
 
     # Create the forward wrappers
-    base_model, base_tokenizer = load_model_and_tokenizer(
-        "GraySwanAI/Llama-3-8B-Instruct-RR",
-    )
+    if args.base_model_name is not None:
+        base_model, base_tokenizer = load_model_and_tokenizer(
+            "GraySwanAI/Llama-3-8B-Instruct-RR",
+        )
+    else:
+        base_model, base_tokenizer = model, tokenizer
+    
     base_forward = create_model_wrapper(
         model=base_model,
         tokenizer=base_tokenizer,
@@ -705,7 +736,8 @@ if __name__ == "__main__":
 
     mc_dataset = load_dataset(
         "json",
-        data_files=f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_{args.model_name.split('/')[1]}.json",
+        # data_files=f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_{args.model_name.split('/')[1]}.json",
+        data_files=f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_Llama-3.1-8B-Instruct.json",
     )["train"]
 
     max_new_tokens = args.max_new_tokens  # 150
@@ -762,7 +794,7 @@ if __name__ == "__main__":
             # Generate
             outputs, harmfulness_estimate = generate(
                 model_config=model.config,
-                base_model_config=base_model.config,
+                base_model_config=model.config,
                 base_forward=base_forward,
                 proposal_forward=proposal_forward,
                 r_fn=r_fn,
@@ -792,6 +824,8 @@ if __name__ == "__main__":
             example_model_logs[
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}"
             ] = harmfulness_estimate
+            
+            break
 
         model_logs[example_idx] = example_model_logs
 
