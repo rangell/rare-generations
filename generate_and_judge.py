@@ -231,12 +231,19 @@ def create_reward_fn(
 
 
 def score_responses(
-    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50
+    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50, cheap_judge=True,
 ):
-    scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
-    responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
-    judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
-    judge_scores = torch.tensor(judge_scores, device=input_ids.device)
+    if cheap_judge:
+        judge_scores = sr_harmful_reward_fn(
+            forbidden_prompt=forbidden_prompt,
+            responses=tokenizer.batch_decode(input_ids),
+            device="cuda:1",
+        ).to(input_ids.device)
+    else:
+        scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
+        responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
+        judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
+        judge_scores = torch.tensor(judge_scores, device=input_ids.device)
     return judge_scores
 
 
@@ -312,6 +319,7 @@ def generate(
     smc_verbose=False,
     importance_resampling_at_last_step=False,
     use_cache=False,
+    cheap_judge=True,
 ):
     """Implements simple greedy decoding."""
 
@@ -483,7 +491,7 @@ def generate(
 
     # Judge the responses
     judge_scores = score_responses(
-        tokenizer, forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :]
+        tokenizer=tokenizer, forbidden_prompt=forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :], cheap_judge=cheap_judge
     )
 
     responses = [
@@ -601,6 +609,12 @@ def get_exp_args():
         type=int,
         default=0,
         help="Index of the model to use",
+    )
+    parser.add_argument(
+        "--cheap_judge",
+        action="store_true",
+        default=False
+        help="Whether to use a cheap judge for scoring.",
     )
     parser.add_argument(
         "--use_cache",
@@ -802,7 +816,8 @@ if __name__ == "__main__":
             # Generate
             outputs, harmfulness_estimate = generate(
                 model_config=model.config,
-                base_model_config=model.config,
+                cheap_judge=args.cheap_judge,
+                base_model_config=base_model.config,
                 base_forward=base_forward,
                 proposal_forward=proposal_forward,
                 r_fn=r_fn,
@@ -833,7 +848,7 @@ if __name__ == "__main__":
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}"
             ] = harmfulness_estimate
 
-        break
+        import pdb; pdb.set_trace()
 
         model_logs[example_idx] = example_model_logs
 
