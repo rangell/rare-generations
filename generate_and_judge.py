@@ -590,6 +590,13 @@ def get_exp_args():
         help="which model to score.",
     )    
     parser.add_argument(
+        "--base_model_name",
+        type=str,
+        default=None,
+        help="which model to score.",
+    )    
+    
+    parser.add_argument(
         "--model_idx",
         type=int,
         default=0,
@@ -618,6 +625,7 @@ def get_exp_args():
     )
 
     args = parser.parse_args()
+    args = get_model_name(args)
 
     smc_args = dict(
         decoding="sample",
@@ -824,8 +832,8 @@ if __name__ == "__main__":
             example_model_logs[
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}"
             ] = harmfulness_estimate
-            
-            break
+
+        break
 
         model_logs[example_idx] = example_model_logs
 
