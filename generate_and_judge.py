@@ -613,12 +613,12 @@ def get_exp_args():
     parser.add_argument(
         "--cheap_judge",
         action="store_true",
-        default=False,
         help="Whether to use a cheap judge for scoring.",
     )
     parser.add_argument(
         "--use_cache",
         action="store_true",
+        default=True,
         help="Whether to use cache for generation.",
     )
     parser.add_argument(
@@ -736,7 +736,7 @@ if __name__ == "__main__":
     # Create the forward wrappers
     if args.base_model_name is not None:
         base_model, base_tokenizer = load_model_and_tokenizer(
-            "GraySwanAI/Llama-3-8B-Instruct-RR",
+            args.base_model_name,
         )
     else:
         base_model, base_tokenizer = model, tokenizer
@@ -848,7 +848,7 @@ if __name__ == "__main__":
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}"
             ] = harmfulness_estimate
 
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
         model_logs[example_idx] = example_model_logs
 
