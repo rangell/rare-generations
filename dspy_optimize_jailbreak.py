@@ -337,14 +337,11 @@ def score_example(example, pred, trace=None):
     print("PREDICTION: ", answer)
     if '{}' not in answer:
         return -100
-    
-    # return 1.0
 
     instruction = answer.format(example.context)
 
 
     result = np.log(get_harm_estimate(model, tokenizer, instruction, example.context))
-    # return 1.0 #result
     return result
 
 
@@ -362,7 +359,7 @@ def score_example(example, pred, trace=None):
 
 import os
 import dspy
-from dspy.datasets.gsm8k import GSM8K #, gsm8k_metric
+# from dspy.datasets.gsm8k import GSM8K #, gsm8k_metric
 # Import the optimizer
 from dspy.teleprompt import MIPROv2, COPRO
 
