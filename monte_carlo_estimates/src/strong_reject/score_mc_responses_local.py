@@ -5,6 +5,7 @@ import json
 import random
 import re
 from tqdm import tqdm
+import math
 
 from datasets import Dataset
 from joblib import Parallel, delayed
@@ -82,13 +83,13 @@ if __name__ == '__main__':
     with open(args.generations_file, "r") as f:
         generations = json.load(f)
 
-    batch_size = 32
+    batch_size = 100
     for prompt in tqdm(list(generations.keys())):
         response_dict = generations[prompt]
         all_responses = list(response_dict.keys())
 
         all_scores = []
-        num_chunks = int((len(all_responses) / batch_size) + 1)
+        num_chunks = math.ceil(len(all_responses) / batch_size)
         for chunk_idx in tqdm(range(num_chunks)):
             start_idx = chunk_idx * batch_size
             end_idx = min((chunk_idx + 1) * batch_size, len(all_responses))
@@ -115,5 +116,5 @@ if __name__ == '__main__':
         dataset_dict["harm_var"].append(np.var(scores))
 
     ds = Dataset.from_dict(dataset_dict)
-    ds.to_json(args.generations_file.replace("mc_harm_est", "mc_harm_est_10k").replace("-raw-scored", ""))
+    ds.to_json(args.generations_file.replace("mc_harm_est", "mc_harm_est_10k").replace("-raw-unscored", ""))
     
