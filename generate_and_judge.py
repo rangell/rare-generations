@@ -593,7 +593,7 @@ def get_exp_args():
         "--num_particle_arr",
         type=int,
         nargs="+",
-        default=[1000],
+        default=[10, 10],
         help="Number of particles for each generation step.",
     )
     parser.add_argument(
@@ -663,6 +663,7 @@ def get_exp_args():
     parser.add_argument(
         "--use_cache",
         action="store_true",
+        default=True,
         help="Whether to use cache for generation.",
     )
     parser.add_argument(
@@ -741,6 +742,8 @@ def get_model_name(args):
     elif args.model_idx == 2:
         args.model_name = "google/gemma-2-9b-it"
         args.base_model_name = None
+        print('Using Gemma-2-9b-it model with 500 particles for all steps.')
+        args.num_particle_arr = [500] * len(args.num_particle_arr)
     elif args.model_idx == 3:
         args.model_name = "google/gemma-2-2b-it"
         args.base_model_name = None
@@ -818,7 +821,7 @@ if __name__ == "__main__":
 
     max_new_tokens = args.max_new_tokens  # 150
     model_logs = {}
-    for example_idx, example in enumerate(mc_dataset):
+    for example_idx, example in enumerate(tqdm(mc_dataset)):
         example_model_logs = {}
         forbidden_prompt = example["forbidden_prompt"]
         messages = [
@@ -907,8 +910,6 @@ if __name__ == "__main__":
             example_model_logs[
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}"
             ] = harmfulness_estimate
-
-        import pdb; pdb.set_trace()
 
         model_logs[example_idx] = example_model_logs
 
