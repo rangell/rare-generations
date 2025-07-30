@@ -137,19 +137,7 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
             )  # Get the last token for generation
         else:
             cache_input_ids = _input_ids
-        # model_inputs = dict(
-        #     input_ids=cache_input_ids,  # Get the last token for generation
-        #     attention_mask=_attention_mask,
-        #     eos_token_id=tokenizer.eos_token_id,
-        #     pad_token_id=tokenizer.pad_token_id,
-        #     output_scores=True,
-        #     return_dict_in_generate=True,
-        #     output_hidden_states=False,
-        #     past_key_values=past_key_values,
-        #     cache_position=cache_position,
-        #     use_cache=use_cache,
-        # )
-
+            
         model_inputs = dict(
             input_ids=cache_input_ids.to(model.device),  # Get the last token for generation
             attention_mask=_attention_mask.to(model.device),
