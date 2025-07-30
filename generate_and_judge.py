@@ -137,18 +137,32 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
             )  # Get the last token for generation
         else:
             cache_input_ids = _input_ids
+        # model_inputs = dict(
+        #     input_ids=cache_input_ids,  # Get the last token for generation
+        #     attention_mask=_attention_mask,
+        #     eos_token_id=tokenizer.eos_token_id,
+        #     pad_token_id=tokenizer.pad_token_id,
+        #     output_scores=True,
+        #     return_dict_in_generate=True,
+        #     output_hidden_states=False,
+        #     past_key_values=past_key_values,
+        #     cache_position=cache_position,
+        #     use_cache=use_cache,
+        # )
+
         model_inputs = dict(
-            input_ids=cache_input_ids,  # Get the last token for generation
-            attention_mask=_attention_mask,
+            input_ids=cache_input_ids.to(model.device),  # Get the last token for generation
+            attention_mask=_attention_mask.to(model.device),
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.pad_token_id,
             output_scores=True,
             return_dict_in_generate=True,
             output_hidden_states=False,
             past_key_values=past_key_values,
-            cache_position=cache_position,
+            cache_position=cache_position.to(model.device),
             use_cache=use_cache,
         )
+        _completed_generation = _completed_generation.to(model.device)
 
         if len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
             # Use the base model to generate the proposal distribution
@@ -215,6 +229,7 @@ def create_reward_fn(
     forbidden_prompt: str = "",
     prompt_len: int = -1,
     batch_size: int = 32,
+    device='cuda:1',
 ):
     def reward_fn(_input_ids):
         num_chunks = int((_input_ids.shape[0] / batch_size) + 1)
@@ -223,6 +238,7 @@ def create_reward_fn(
             batch_scores = sr_harmful_reward_fn(
                 forbidden_prompt,
                 tokenizer.batch_decode(b_input_ids[:, prompt_len:]),
+                device=device,
             )
             all_scores.append(batch_scores)
         return torch.cat(all_scores)
@@ -231,13 +247,14 @@ def create_reward_fn(
 
 
 def score_responses(
-    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50, cheap_judge=True,
+    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50, reward_batch_size: int = 32, cheap_judge=True, device='cuda:1'
 ):
     if cheap_judge:
         judge_scores = sr_harmful_reward_fn(
             forbidden_prompt=forbidden_prompt,
             responses=tokenizer.batch_decode(input_ids),
-            device="cuda:1",
+            device=device,
+            batch_size=reward_batch_size,
         ).to(input_ids.device)
     else:
         scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
@@ -320,6 +337,10 @@ def generate(
     importance_resampling_at_last_step=False,
     use_cache=False,
     cheap_judge=True,
+    reward_fn_device='cuda:1',
+    base_model_device='cuda:0',
+    proposal_model_device='cuda:0',
+    reward_batch_size=32,
 ):
     """Implements simple greedy decoding."""
 
@@ -350,12 +371,12 @@ def generate(
     prompt_len = len(_input_ids[0])
 
     fk_class = FKSteering(
-        device=model.device,
+        device=base_model_device,
         r_fn=lambda x: sr_harmful_reward_fn(
             forbidden_prompt=forbidden_prompt,
             responses=tokenizer.batch_decode(x[:, prompt_len:]),
-            device="cuda:1",
-        ).to(model.device),
+            device=reward_fn_device,
+        ).to(proposal_model_device),
         potential_type="diff",
         max_seq_len=max_new_tokens,
         num_particles=num_particles,
@@ -426,6 +447,9 @@ def generate(
                 base_cache_position,
                 base_key_values,
             ) = base_ret
+
+            next_tokens = next_tokens.to(base_model_device)
+            proposal_logprobs = proposal_logprobs.to(base_model_device)
             base_logprobs = torch.gather(base_logprobs_distribution, -1, next_tokens)
         else:
             base_logprobs = proposal_logprobs.clone()
@@ -471,7 +495,7 @@ def generate(
             )
         else:
             raise ValueError("Unknown resampling strategy.")
-
+        
         importance_weights = importance_weights[indices] * torch.exp(
             base_logprobs[indices] - proposal_logprobs[indices]
         ).view(num_particles)
@@ -487,11 +511,12 @@ def generate(
         # change the input_ids and attention_mask to only include the resampled sequences
         _attention_mask = _attention_mask[indices]
         # update _completed_generation to only include the resampled sequences
+        indices = indices.to(proposal_model_device)
         _completed_generation = _completed_generation[indices]
 
     # Judge the responses
     judge_scores = score_responses(
-        tokenizer=tokenizer, forbidden_prompt=forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :], cheap_judge=cheap_judge
+        tokenizer=tokenizer, forbidden_prompt=forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :], cheap_judge=cheap_judge, device=reward_fn_device, reward_batch_size=reward_batch_size
     )
 
     responses = [
@@ -545,6 +570,11 @@ def seed_everything(seed: int = 42):
 
     np.random.seed(seed)
 
+def instruct_to_model_base(model_name):
+    if model_name == 'meta-llama/Llama-3.2-1B-Instruct':
+        return 'meta-llama/Llama-3.2-1B'
+    else:
+        raise ValueError(f"Base checkpoint not specified for model name {model_name}")
 
 def get_exp_args():
     parser = argparse.ArgumentParser()
@@ -582,9 +612,35 @@ def get_exp_args():
         "--proposal_model",
         type=str,
         default="toxic_model",
-        choices=["base", "toxic_model"],
+        choices=["base", "toxic_model", "pre_instruct"],
         help="Model to use for proposal generation.",
     )
+    parser.add_argument(
+        "--base_model_device",
+        type=str,
+        default="cuda:0",
+        help="Device to use for base model.",
+    )
+    parser.add_argument(
+        "--proposal_model_device",
+        type=str,
+        default="cuda:0",
+        help="Device to use for base model.",
+    )
+    parser.add_argument(
+        "--reward_fn_device",
+        type=str,
+        default="cuda:1",
+        help="Device to use for reward function.",
+    )
+
+    parser.add_argument(
+        "--reward_batch_size",
+        type=int,
+        default=32,
+        help="Batch size for reward function.",
+    )
+
     parser.add_argument(
         "--use_smc",
         action="store_true",
@@ -613,7 +669,7 @@ def get_exp_args():
     parser.add_argument(
         "--cheap_judge",
         action="store_true",
-        default=False
+        default=False,
         help="Whether to use a cheap judge for scoring.",
     )
     parser.add_argument(
@@ -736,7 +792,8 @@ if __name__ == "__main__":
     # Create the forward wrappers
     if args.base_model_name is not None:
         base_model, base_tokenizer = load_model_and_tokenizer(
-            "GraySwanAI/Llama-3-8B-Instruct-RR",
+            args.base_model_name,
+            device=args.base_model_device,
         )
     else:
         base_model, base_tokenizer = model, tokenizer
@@ -747,13 +804,22 @@ if __name__ == "__main__":
     )
 
     if args.proposal_model == "toxic_model":
+        args.proposal_model_device = args.base_model_device
         proposal_forward = create_model_wrapper(
             model=model,
             tokenizer=tokenizer,
             fwd_pre_hooks=ablation_fwd_pre_hooks,
             fwd_hooks=ablation_fwd_hooks,
         )
+    elif args.proposal_model == "pre_instruct":
+        pre_instruct_checkpoint = instruct_to_model_base(args.model_name)
+        pre_instruct_model, pre_instruct_tokenizer = load_model_and_tokenizer(pre_instruct_checkpoint, device=args.proposal_model_device)
+        proposal_forward = create_model_wrapper(
+            model=pre_instruct_model,
+            tokenizer=pre_instruct_tokenizer,
+        )
     else:
+        args.proposal_model_device = args.base_model_device
         proposal_forward = base_forward
 
     mc_dataset = load_dataset(
@@ -799,6 +865,7 @@ if __name__ == "__main__":
                 forbidden_prompt=forbidden_prompt,
                 prompt_len=input_ids.shape[1],
                 batch_size=128,
+                device=args.reward_fn_device,
             )
 
             # Clear cache to avoid OOM errors
@@ -816,6 +883,7 @@ if __name__ == "__main__":
             # Generate
             outputs, harmfulness_estimate = generate(
                 model_config=model.config,
+                proposal_model=args.proposal_model,
                 cheap_judge=args.cheap_judge,
                 base_model_config=base_model.config,
                 base_forward=base_forward,
@@ -840,6 +908,10 @@ if __name__ == "__main__":
                 proposal_inv_temperature=args.proposal_inv_temperature,
                 smc_verbose=args.smc_verbose,
                 use_cache=args.use_cache,
+                reward_fn_device=args.reward_fn_device,
+                base_model_device=args.base_model_device,
+                proposal_model_device=args.proposal_model_device,
+                reward_batch_size=args.reward_batch_size,
             )
 
             arr_harmfulness_scores.append(harmfulness_estimate)
