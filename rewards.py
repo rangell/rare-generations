@@ -139,7 +139,6 @@ def calculate_harmful_reward(
 
 def sr_harmful_reward_fn(forbidden_prompt, responses, device, batch_size=40):
     model_name = "qylu4156/strongreject-15k-v1"
-
     # cache the reward model
     if model_name not in MODELS:
         # load model
