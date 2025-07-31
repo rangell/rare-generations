@@ -47,6 +47,7 @@ def load_model_and_tokenizer(model_name_or_path, device="cuda:0"):
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         torch_dtype=torch.bfloat16,
+        # torch_dtype=torch.float32,
         low_cpu_mem_usage=True,
         device_map=device,
         token=os.getenv("HF_TOKEN"),
@@ -152,16 +153,18 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
             output_scores=True,
             return_dict_in_generate=True,
             output_hidden_states=False,
-            past_key_values=past_key_values,
-            cache_position=cache_position.to(model.device),
-            use_cache=use_cache,
         )
-        _completed_generation = _completed_generation.to(model.device)
+        if use_cache:
+            model_inputs["past_key_values"] = past_key_values
+            model_inputs["cache_position"] = cache_position.to(model.device)
+            model_inputs["use_cache"] = use_cache
 
         if return_logprob_only:
             # If we only want the log probabilities, we can skip the generation step
             with torch.no_grad():
-                output = model(_input_ids)
+                output = model(_input_ids,
+                               _attention_mask,
+                               use_cache=use_cache)
             
             
             shift_logits = output.logits[:, :-1, :]
@@ -217,6 +220,7 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
 
         # Ensure proposal_logprobs is of shape (num_particles, 1)
         next_token_logprobs = next_token_logprobs.unsqueeze(-1)
+        next_token_logprobs[_completed_generation] = 0.0  # Set logprobs to 0 for completed sequences
 
         # Update cache position
         if use_cache:
@@ -328,6 +332,8 @@ def update_cache_after_resampling(
 def generate(
     model_config,
     base_model_config,
+    tokenizer,
+    forbidden_prompt,
     base_forward,
     proposal_forward,
     r_fn,
@@ -360,7 +366,7 @@ def generate(
 ):
     """Implements simple greedy decoding."""
 
-    model.eval()  # Ensure model is in eval mode
+    # model.eval()  # Ensure model is in eval mode
 
     _input_ids = input_ids.detach().clone()
     _attention_mask = attention_mask.detach().clone()
@@ -386,26 +392,26 @@ def generate(
     assert _input_ids.shape[0] == num_particles, (_input_ids.shape[0], num_particles)
     prompt_len = len(_input_ids[0])
 
-    fk_class = FKSteering(
-        device=base_model_device,
-        r_fn=lambda x: sr_harmful_reward_fn(
-            forbidden_prompt=forbidden_prompt,
-            responses=tokenizer.batch_decode(x[:, prompt_len:]),
-            device=reward_fn_device,
-        ).to(proposal_model_device),
-        potential_type="diff",
-        max_seq_len=max_new_tokens,
-        num_particles=num_particles,
-        resample_start=resample_start,
-        resample_end=resample_end,
-        resample_interval=resample_interval,
-        lmbda=lmbda,
-        use_smc=use_smc,
-        adaptive_resampling=adaptive_resampling,
-        adaptive_resampling_threshold=adaptive_resampling_threshold,
-        smc_verbose=smc_verbose,
-        importance_resampling_at_last_step=importance_resampling_at_last_step,
-    )
+    # fk_class = FKSteering(
+    #     device=base_model_device,
+    #     r_fn=lambda x: sr_harmful_reward_fn(
+    #         forbidden_prompt=forbidden_prompt,
+    #         responses=tokenizer.batch_decode(x[:, prompt_len:]),
+    #         device=reward_fn_device,
+    #     ).to(proposal_model_device),
+    #     potential_type="diff",
+    #     max_seq_len=max_new_tokens,
+    #     num_particles=num_particles,
+    #     resample_start=resample_start,
+    #     resample_end=resample_end,
+    #     resample_interval=resample_interval,
+    #     lmbda=lmbda,
+    #     use_smc=use_smc,
+    #     adaptive_resampling=adaptive_resampling,
+    #     adaptive_resampling_threshold=adaptive_resampling_threshold,
+    #     smc_verbose=smc_verbose,
+    #     importance_resampling_at_last_step=importance_resampling_at_last_step,
+    # )
     # Main generation loop
     importance_weights = torch.ones(num_particles, device=_input_ids.device)
     sequence_proposal_logprob = torch.zeros(num_particles, device=_input_ids.device)
@@ -474,11 +480,12 @@ def generate(
         #     base_logprobs - proposal_logprobs
         # ).view(num_particles)
         # assert importance_weight_at_cur_step.shape == (num_particles,)
-        _input_ids, indices = fk_class(
-            step_idx=step_idx,
-            sequences=_input_ids,
-            importance_weights=torch.ones(num_particles, device=_input_ids.device),
-        )
+        # _input_ids, indices = fk_class(
+        #     step_idx=step_idx,
+        #     sequences=_input_ids,
+        #     importance_weights=torch.ones(num_particles, device=_input_ids.device),
+        # )
+        indices = torch.arange(num_particles, device=_input_ids.device)
 
         if not use_smc:
             # No resampling needed, just continue
@@ -536,8 +543,14 @@ def generate(
         inv_temperature=base_inv_temperature,
         return_logprob_only=True,
     )
+    
+    # TODO 
+    for batch_idx in range(sequence_base_logprob.shape[0]):
+        sequence_base_logprob[batch_idx, _input_ids[batch_idx, 1:] == tokenizer.eos_token_id] = 0.0
 
     sequence_base_logprob = sequence_base_logprob[:, prompt_len -1:].sum(dim=1)
+    # set to sequence base logprob to 0 for eot-id    
+    
     assert sequence_base_logprob.shape == (num_particles, ), (sequence_base_logprob.shape, num_particles)
     importance_weights = torch.exp(sequence_base_logprob - sequence_proposal_logprob)
     assert importance_weights.shape == (num_particles,), (
@@ -545,6 +558,7 @@ def generate(
         num_particles,
     )
 
+    prompt_kl = -importance_weights.log().mean().item()
 
     # Judge the responses
     judge_scores = score_responses(
@@ -579,9 +593,10 @@ def generate(
 
         # biased_sis_approx_harm_variance = biased_reweighted_scores.var().item()
         print(f"Judge scores: {judge_scores.mean()} ± {judge_scores.std()}")
+        print(f"KL divergence: {prompt_kl}")
         # print(f"Biased SIS harm score variance: {biased_sis_approx_harm_variance}")
 
-        return _input_ids, sis_approx_harm_score
+        return _input_ids, sis_approx_harm_score, prompt_kl, judge_scores, importance_weights, sis_approx_harm_variance
     else:
         fk_estimate = fk_class.compute_fk_estimate(
             test_function_values=judge_scores,
@@ -927,7 +942,7 @@ if __name__ == "__main__":
             print(f"Monte Carlo harm variance: {example['harm_var']}")
 
             # Generate
-            outputs, harmfulness_estimate = generate(
+            outputs, harmfulness_estimate, prompt_kl, judge_scores, importance_weights = generate(
                 model_config=model.config,
                 proposal_model=args.proposal_model,
                 cheap_judge=args.cheap_judge,
@@ -936,6 +951,8 @@ if __name__ == "__main__":
                 proposal_forward=proposal_forward,
                 r_fn=r_fn,
                 input_ids=input_ids,
+                tokenizer=tokenizer,
+                forbidden_prompt=forbidden_prompt,
                 attention_mask=attention_mask,
                 fwd_pre_hooks=ablation_fwd_pre_hooks,
                 fwd_hooks=ablation_fwd_hooks,
@@ -965,6 +982,15 @@ if __name__ == "__main__":
             example_model_logs[
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}"
             ] = harmfulness_estimate
+            example_model_logs[
+                f"new_harm_estimates_{num_particles}_{num_particles_idx}_prompt_kl"
+            ] = prompt_kl
+            example_model_logs[
+                f"new_harm_estimates_{num_particles}_{num_particles_idx}_judge_scores"
+            ] = judge_scores.cpu().tolist()
+            example_model_logs[
+                f"new_harm_estimates_{num_particles}_{num_particles_idx}_importance_weights"
+            ] = importance_weights.cpu().tolist()
 
         model_logs[example_idx] = example_model_logs
 
