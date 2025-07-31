@@ -33,7 +33,10 @@ from datasets import load_dataset
 def load_model_and_tokenizer(model_name_or_path, device="cuda:0"):
     # NOTE: returns model in `eval` mode
     config = AutoConfig.from_pretrained(
-        model_name_or_path, output_hidden_states=True, return_dict_in_generate=True
+        model_name_or_path,
+        output_hidden_states=True,
+        return_dict_in_generate=True,
+        local_files_only=True,
     )
 
     if isinstance(config, Qwen2Config):
@@ -49,6 +52,7 @@ def load_model_and_tokenizer(model_name_or_path, device="cuda:0"):
         token=os.getenv("HF_TOKEN"),
         config=config,
         trust_remote_code=True,
+        local_files_only=True,
     ).eval()
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -56,6 +60,7 @@ def load_model_and_tokenizer(model_name_or_path, device="cuda:0"):
         use_fast=False,
         token=os.getenv("HF_TOKEN"),
         padding_side="left",
+        local_files_only=True,
     )
 
     if tokenizer.pad_token is None:
@@ -130,6 +135,7 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
         cache_position=None,
         past_key_values=None,
         use_cache=False,
+        return_logprob_only=False,
     ):
         if cache_position is not None and len(cache_position) == 1:
             cache_input_ids = _input_ids[:, -1].unsqueeze(
@@ -150,6 +156,25 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
             use_cache=use_cache,
         )
 
+        if return_logprob_only:
+            # If we only want the log probabilities, we can skip the generation step
+            with torch.no_grad():
+                output = model(_input_ids)
+            
+            
+            shift_logits = output.logits[:, :-1, :]
+            shift_labels = _input_ids[:, 1:]
+            
+            logprobs = torch.log_softmax(
+                inv_temperature * shift_logits, dim=-1
+            )
+            token_logprobs = logprobs.gather(2, shift_labels.unsqueeze(-1)).squeeze(-1)
+            assert token_logprobs.shape == (
+                _input_ids.shape[0], _input_ids.shape[1] - 1
+            ), token_logprobs.shape
+
+            return token_logprobs
+
         if len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
             # Use the base model to generate the proposal distribution
             # NOTE: This is the default behavior, so we can skip adding hooks
@@ -167,6 +192,7 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
         logprobs_distribution = torch.log_softmax(
             inv_temperature * output.logits[:, -1, :], dim=-1
         )
+
         next_tokens = token_sampler(
             decoding=decoding,
             proposal_output=output,
@@ -231,7 +257,11 @@ def create_reward_fn(
 
 
 def score_responses(
-    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50, cheap_judge=True,
+    tokenizer,
+    forbidden_prompt: str,
+    input_ids: torch.Tensor,
+    n_jobs: int = 50,
+    cheap_judge=True,
 ):
     if cheap_judge:
         judge_scores = sr_harmful_reward_fn(
@@ -242,7 +272,9 @@ def score_responses(
     else:
         scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
         responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
-        judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
+        judge_scores = Parallel(n_jobs=n_jobs)(
+            delayed(scoring_fn)(r) for r in responses
+        )
         judge_scores = torch.tensor(judge_scores, device=input_ids.device)
     return judge_scores
 
@@ -371,6 +403,7 @@ def generate(
     )
     # Main generation loop
     importance_weights = torch.ones(num_particles, device=_input_ids.device)
+    sequence_proposal_logprob = torch.zeros(num_particles, device=_input_ids.device)
     for step_idx in tqdm(range(max_new_tokens)):
 
         if (
@@ -406,29 +439,34 @@ def generate(
             past_key_values,
         ) = ret
 
-        if proposal_forward != base_forward:
-            base_ret = base_forward(
-                _input_ids=_input_ids,
-                _attention_mask=_attention_mask,
-                _completed_generation=_completed_generation,
-                decoding=decoding,
-                inv_temperature=base_inv_temperature,
-                use_cache=use_cache,
-                past_key_values=base_key_values,
-                cache_position=base_cache_position,
-            )
+        sequence_proposal_logprob += proposal_logprobs.squeeze(-1)
+        assert sequence_proposal_logprob.shape == (num_particles, ), (
+            sequence_proposal_logprob.shape,
+        )   
 
-            (
-                base_logprobs_distribution,
-                _,
-                _,
-                _,
-                base_cache_position,
-                base_key_values,
-            ) = base_ret
-            base_logprobs = torch.gather(base_logprobs_distribution, -1, next_tokens)
-        else:
-            base_logprobs = proposal_logprobs.clone()
+        # if proposal_forward != base_forward:
+        #     base_ret = base_forward(
+        #         _input_ids=_input_ids,
+        #         _attention_mask=_attention_mask,
+        #         _completed_generation=_completed_generation,
+        #         decoding=decoding,
+        #         inv_temperature=base_inv_temperature,
+        #         use_cache=use_cache,
+        #         past_key_values=base_key_values,
+        #         cache_position=base_cache_position,
+        #     )
+
+        #     (
+        #         base_logprobs_distribution,
+        #         _,
+        #         _,
+        #         _,
+        #         base_cache_position,
+        #         base_key_values,
+        #     ) = base_ret
+        #     base_logprobs = torch.gather(base_logprobs_distribution, -1, next_tokens)
+        # else:
+        #     base_logprobs = proposal_logprobs.clone()
 
         # Update input arguments
         _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
@@ -436,14 +474,14 @@ def generate(
             (_attention_mask, torch.ones_like(next_tokens)), dim=1
         )
 
-        importance_weight_at_cur_step = torch.exp(
-            base_logprobs - proposal_logprobs
-        ).view(num_particles)
-        assert importance_weight_at_cur_step.shape == (num_particles,)    
+        # importance_weight_at_cur_step = torch.exp(
+        #     base_logprobs - proposal_logprobs
+        # ).view(num_particles)
+        # assert importance_weight_at_cur_step.shape == (num_particles,)
         _input_ids, indices = fk_class(
             step_idx=step_idx,
             sequences=_input_ids,
-            importance_weights=importance_weight_at_cur_step,
+            importance_weights=torch.ones(num_particles, device=_input_ids.device),
         )
 
         if not use_smc:
@@ -472,26 +510,51 @@ def generate(
         else:
             raise ValueError("Unknown resampling strategy.")
 
-        importance_weights = importance_weights[indices] * torch.exp(
-            base_logprobs[indices] - proposal_logprobs[indices]
-        ).view(num_particles)
+        # importance_weights = importance_weights[indices] * torch.exp(
+        #     base_logprobs[indices] - proposal_logprobs[indices]
+        # ).view(num_particles)
 
-        assert torch.all(
-            importance_weights >= 0
-        ), "Importance weights should be non-negative."
-        assert importance_weights.shape == (num_particles,), (
-            importance_weights.shape,
-            num_particles,
-        )
+        # assert torch.all(
+        #     importance_weights >= 0
+        # ), "Importance weights should be non-negative."
+        # assert importance_weights.shape == (num_particles,), (
+        #     importance_weights.shape,
+        #     num_particles,
+        # )
 
         # change the input_ids and attention_mask to only include the resampled sequences
-        _attention_mask = _attention_mask[indices]
+        _attention_mask = _attention_mask[indices]    
+
+        # change sequence_proposal_logprob to only include the resampled sequences
+        sequence_proposal_logprob = sequence_proposal_logprob[indices]
+
         # update _completed_generation to only include the resampled sequences
         _completed_generation = _completed_generation[indices]
 
+    sequence_base_logprob = base_forward(
+        _input_ids=_input_ids,
+        _attention_mask=_attention_mask,
+        _completed_generation=_completed_generation,
+        decoding=decoding,
+        inv_temperature=base_inv_temperature,
+        return_logprob_only=True,
+    )
+
+    sequence_base_logprob = sequence_base_logprob[:, prompt_len -1:].sum(dim=1)
+    assert sequence_base_logprob.shape == (num_particles, ), (sequence_base_logprob.shape, num_particles)
+    importance_weights = torch.exp(sequence_base_logprob - sequence_proposal_logprob)
+    assert importance_weights.shape == (num_particles,), (
+        importance_weights.shape,
+        num_particles,
+    )
+
+
     # Judge the responses
     judge_scores = score_responses(
-        tokenizer=tokenizer, forbidden_prompt=forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :], cheap_judge=cheap_judge
+        tokenizer=tokenizer,
+        forbidden_prompt=forbidden_prompt,
+        input_ids=_input_ids[:, input_ids.shape[1] :],
+        cheap_judge=cheap_judge,
     )
 
     responses = [
@@ -525,6 +588,7 @@ def generate(
     else:
         fk_estimate = fk_class.compute_fk_estimate(
             test_function_values=judge_scores,
+            importance_weights=importance_weights,
         )
         print("Judge scores:", judge_scores.mean(), judge_scores.std())
         print(f"FK harm score estimate: {fk_estimate}")
@@ -562,7 +626,7 @@ def get_exp_args():
     parser.add_argument(
         "--ablation_intensity",
         type=float,
-        default=0.5,
+        default=0.7,
         help="Intensity of the ablation.",
     )
     parser.add_argument(
@@ -575,7 +639,7 @@ def get_exp_args():
         "--num_particle_arr",
         type=int,
         nargs="+",
-        default=[10, 10],
+        default=[200, 200, 200, 200, 200],
         help="Number of particles for each generation step.",
     )
     parser.add_argument(
@@ -596,14 +660,14 @@ def get_exp_args():
         type=str,
         default="meta-llama/Llama-3.2-1B-Instruct",
         help="which model to score.",
-    )    
+    )
     parser.add_argument(
         "--base_model_name",
         type=str,
         default=None,
         help="which model to score.",
-    )    
-    
+    )
+
     parser.add_argument(
         "--model_idx",
         type=int,
@@ -687,6 +751,7 @@ def get_exp_args():
 
     return combined_args, output_dir
 
+
 def get_model_name(args):
     if args.model_idx == 0:
         args.model_name = "meta-llama/Llama-3.2-1B-Instruct"
@@ -697,17 +762,23 @@ def get_model_name(args):
     elif args.model_idx == 2:
         args.model_name = "google/gemma-2-9b-it"
         args.base_model_name = None
-        print('Using Gemma-2-9b-it model with 500 particles for all steps.')
-        args.num_particle_arr = [500] * len(args.num_particle_arr)
+        print("Using Gemma-2-9b-it model with 500 particles for all steps.")
+        # args.num_particle_arr = [500] * len(args.num_particle_arr)
     elif args.model_idx == 3:
         args.model_name = "google/gemma-2-2b-it"
         args.base_model_name = None
     elif args.model_idx == 4:
         args.base_model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
         args.model_name = "meta-llama/meta-llama-3-8b-instruct"
+    elif args.model_idx == 5:
+        args.model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
+        args.base_model_name = None
+        raise ValueError('"GraySwanAI/Llama-3-8B-Instruct-RR" is not supported yet.')
     else:
-        raise ValueError(f"Unknown model index {args.model_idx}. Please choose a valid model index.")
-    
+        raise ValueError(
+            f"Unknown model index {args.model_idx}. Please choose a valid model index."
+        )
+
     return args
 
 
@@ -720,7 +791,7 @@ if __name__ == "__main__":
     refusal_direction_path = (
         f"refusal_direction/pipeline/runs/{args.model_name.split('/')[1]}/"
     )
-    assert Path(refusal_direction_path).exists(), (refusal_direction_path)
+    assert Path(refusal_direction_path).exists(), refusal_direction_path
 
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(model_name_or_path)
@@ -742,7 +813,7 @@ if __name__ == "__main__":
         )
     else:
         base_model, base_tokenizer = model, tokenizer
-    
+
     base_forward = create_model_wrapper(
         model=base_model,
         tokenizer=base_tokenizer,
