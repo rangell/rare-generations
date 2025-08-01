@@ -439,7 +439,7 @@ def generate(
     # sequence_proposal_logprob = torch.zeros(num_particles, device=_input_ids["proposal"].device)
     vocab_size = model_config.vocab_size
     full_proposal_logprob = torch.zeros(num_particles, max_new_tokens, vocab_size, device=_input_ids["proposal"].device)
-    sequence_proposal_logprobs = torch.zeros(num_particles, max_new_tokens, device=_input_ids["proposal"].device)
+    sequence_proposal_logprob = torch.zeros(num_particles, max_new_tokens, device=_input_ids["proposal"].device)
 
     for step_idx in tqdm(range(max_new_tokens)):
 
@@ -487,11 +487,11 @@ def generate(
         _attention_mask = {k: torch.cat((v, torch.ones_like(next_tokens)), dim=1) for k, v in _attention_mask.items()}
 
         # sequence_proposal_logprob += proposal_logprobs.squeeze(-1).to(sequence_proposal_logprob.device)
-        # sequence_proposal_logprobs.append(proposal_logprobs.squeeze(-1))
-        sequence_proposal_logprobs[:, step_idx] = proposal_logprobs.squeeze(-1)
+        # sequence_proposal_logprob.append(proposal_logprobs.squeeze(-1))
+        sequence_proposal_logprob[:, step_idx] = proposal_logprobs.squeeze(-1)
 
-        # assert sequence_proposal_logprobs[-1].shape == (num_particles, ), (
-        #     sequence_proposal_logprobs[-1].shape,
+        # assert sequence_proposal_logprob[-1].shape == (num_particles, ), (
+        #     sequence_proposal_logprob[-1].shape,
         # )   
 
         indices = torch.arange(num_particles, device=_input_ids["proposal"].device)
@@ -520,7 +520,7 @@ def generate(
                 indices=indices,
                 model_config=base_model_config,
             )
-            sequence_proposal_logprobs = sequence_proposal_logprobs[indices]
+            sequence_proposal_logprob = sequence_proposal_logprob[indices]
             full_proposal_logprob = full_proposal_logprob[indices]
         
             # update _completed_generation to only include the resampled sequences
@@ -572,7 +572,7 @@ def generate(
     
     prompt_kl = (prompt_kl*non_eos_mask.unsqueeze(-1)).sum(dim=(1,2)).mean()
 
-    summed_sequence_proposal_logprob = (sequence_proposal_logprobs*non_eos_mask).sum(dim=1)
+    summed_sequence_proposal_logprob = (sequence_proposal_logprob*non_eos_mask).sum(dim=1)
     summed_sequence_base_logprob = (sequence_base_logprob*non_eos_mask).sum(dim=1)
     
     assert summed_sequence_base_logprob.shape == (num_particles, ), (summed_sequence_base_logprob.shape, num_particles)
