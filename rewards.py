@@ -162,7 +162,6 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, device, batch_size=40):
         MODELS[model_name] = (model, tokenizer)
 
     model, tokenizer = MODELS[model_name]
-    model = model.to(device)
 
     judge_prompts = [
         JUDGE_PROMPT_TEMPLATE.format(forbidden_prompt=forbidden_prompt, response=r)
@@ -194,6 +193,7 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, device, batch_size=40):
             possible_scores = "1", "2", "3", "4", "5"
             probs = logits[:, [tokenizer.vocab[i] for i in possible_scores]].softmax(dim=-1)
             scores = (probs * torch.linspace(0, 1, 5, device=model.device)).sum(dim=-1)
+            
 
         all_scores.append(scores)
             
@@ -204,7 +204,6 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, device, batch_size=40):
     torch.cuda.empty_cache()
 
     return all_scores.float()
-
 
 if __name__ == "__main__":
     # input_texts = [
