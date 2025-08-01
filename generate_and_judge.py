@@ -181,7 +181,7 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
                 _input_ids.shape[0], _input_ids.shape[1] - 1
             ), token_logprobs.shape
 
-            return token_logprobs
+            return token_logprobs, logprobs
 
         if len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
             # Use the base model to generate the proposal distribution
@@ -436,8 +436,11 @@ def generate(
 
     # Main generation loop
     importance_weights = torch.ones(num_particles, device=_input_ids["proposal"].device)
-    sequence_proposal_logprob = torch.zeros(num_particles, device=_input_ids["proposal"].device)
-    
+    # sequence_proposal_logprob = torch.zeros(num_particles, device=_input_ids["proposal"].device)
+    vocab_size = model_config.vocab_size
+    full_proposal_logprob = torch.zeros(num_particles, max_new_tokens, vocab_size, device=_input_ids["proposal"].device)
+    sequence_proposal_logprobs = torch.zeros(num_particles, max_new_tokens, device=_input_ids["proposal"].device)
+
     for step_idx in tqdm(range(max_new_tokens)):
 
         if (
@@ -465,13 +468,16 @@ def generate(
         )
 
         (
-            _,
+            proposal_logprobs_distribution,
             next_tokens,
             proposal_logprobs,
             _completed_generation_proposal,
             cache_position_proposal,
             past_key_values_proposal,
         ) = ret
+
+        # full_proposal_logprob.append(proposal_logprobs_distribution)
+        full_proposal_logprob[:, step_idx, :] = proposal_logprobs_distribution
 
         _completed_generation["proposal"] = _completed_generation_proposal
         cache_position["proposal"] = cache_position_proposal
@@ -480,10 +486,13 @@ def generate(
         _input_ids = {k: torch.cat((v, next_tokens), dim=1) for k, v in _input_ids.items()}
         _attention_mask = {k: torch.cat((v, torch.ones_like(next_tokens)), dim=1) for k, v in _attention_mask.items()}
 
-        sequence_proposal_logprob += proposal_logprobs.squeeze(-1).to(sequence_proposal_logprob.device)
-        assert sequence_proposal_logprob.shape == (num_particles, ), (
-            sequence_proposal_logprob.shape,
-        )   
+        # sequence_proposal_logprob += proposal_logprobs.squeeze(-1).to(sequence_proposal_logprob.device)
+        # sequence_proposal_logprobs.append(proposal_logprobs.squeeze(-1))
+        sequence_proposal_logprobs[:, step_idx] = proposal_logprobs.squeeze(-1)
+
+        # assert sequence_proposal_logprobs[-1].shape == (num_particles, ), (
+        #     sequence_proposal_logprobs[-1].shape,
+        # )   
 
         indices = torch.arange(num_particles, device=_input_ids["proposal"].device)
         # device_indices = {'base': indices.to(base_model_device), 'proposal': indices.to(proposal_model_device)}
@@ -511,7 +520,8 @@ def generate(
                 indices=indices,
                 model_config=base_model_config,
             )
-            sequence_proposal_logprob = sequence_proposal_logprob[indices]
+            sequence_proposal_logprobs = sequence_proposal_logprobs[indices]
+            full_proposal_logprob = full_proposal_logprob[indices]
         
             # update _completed_generation to only include the resampled sequences
             _completed_generation = {k: v[indices] for k, v in _completed_generation.items()}
@@ -530,7 +540,7 @@ def generate(
         #     num_particles,
         # )
 
-    sequence_base_logprob = base_forward(
+    sequence_base_logprob, full_base_logprob = base_forward(
         _input_ids=_input_ids["base"],
         _attention_mask=_attention_mask["base"],
         _completed_generation=_completed_generation["base"],
@@ -539,22 +549,44 @@ def generate(
         return_logprob_only=True,
     )
     
-    # TODO 
-    for batch_idx in range(sequence_base_logprob.shape[0]):
-        sequence_base_logprob[batch_idx, _input_ids["base"][batch_idx, 1:] == tokenizer.eos_token_id] = 0.0
-        # I dont think this works.
+    # for batch_idx in range(sequence_base_logprob.shape[0]):
+        # sequence_base_logprob[batch_idx, _input_ids["base"][batch_idx, 1:] == tokenizer.eos_token_id] = 0.0
 
-    sequence_base_logprob = sequence_base_logprob[:, prompt_len["base"] -1:].sum(dim=1)
-    # set to sequence base logprob to 0 for eot-id    
+    sequence_base_logprob = sequence_base_logprob[:, prompt_len["base"] -1:] #.sum(dim=1)
+    full_base_logprob = full_base_logprob[:, prompt_len["base"] -1:]
+
+    # note that the full_proposal_logprob already only contains nonprompt tokens
+
+    non_eos_mask = (_input_ids["proposal"][:, prompt_len["proposal"]:] != tokenizer.eos_token_id).to(dtype=full_proposal_logprob.dtype)
+
+    assert full_base_logprob.shape == full_proposal_logprob.shape, (full_base_logprob.shape, full_proposal_logprob.shape)
     
-    assert sequence_base_logprob.shape == (num_particles, ), (sequence_base_logprob.shape, num_particles)
-    importance_weights = torch.exp(sequence_base_logprob.to(sequence_proposal_logprob.device) - sequence_proposal_logprob)
+    # calculate kl divergence
+    diff = full_proposal_logprob - full_base_logprob
+    del full_base_logprob
+    full_proposal_logprob_exp = torch.exp(full_proposal_logprob)
+    del full_proposal_logprob
+    prompt_kl = full_proposal_logprob_exp * diff
+    del full_proposal_logprob_exp
+    del diff
+    
+    prompt_kl = (prompt_kl*non_eos_mask.unsqueeze(-1)).sum(dim=(1,2)).mean()
+
+    summed_sequence_proposal_logprob = (sequence_proposal_logprobs*non_eos_mask).sum(dim=1)
+    summed_sequence_base_logprob = (sequence_base_logprob*non_eos_mask).sum(dim=1)
+    
+    assert summed_sequence_base_logprob.shape == (num_particles, ), (summed_sequence_base_logprob.shape, num_particles)
+    assert summed_sequence_proposal_logprob.shape == (num_particles, ), (summed_sequence_proposal_logprob.shape, num_particles)
+
+    importance_weights = torch.exp(summed_sequence_base_logprob.to(summed_sequence_proposal_logprob.device) - summed_sequence_proposal_logprob)
+
     assert importance_weights.shape == (num_particles,), (
         importance_weights.shape,
         num_particles,
     )
 
-    prompt_kl = -importance_weights.log().mean().item()
+    prompt_kl_v1 = -importance_weights.log().mean().item()
+    print("OLD KL: ", prompt_kl_v1, "NEW KL: ", prompt_kl)
 
     # Judge the responses
     judge_scores = score_responses(
