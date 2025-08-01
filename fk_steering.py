@@ -252,7 +252,7 @@ class FKSteering:
 
         return resampled_sequence, torch.tensor(indices).to(self.device)
 
-    def compute_fk_estimate(self, test_function_values):
+    def compute_fk_estimate(self, test_function_values, importance_weights):
         assert self.potential_type == "diff"
 
         assert (
@@ -284,9 +284,8 @@ class FKSteering:
         inv_potential = torch.exp(-torch.sum(torch.log(arr_potential_values), dim=1))
 
         assert inv_potential.shape == (self.num_particles,)
-        importance_weight_arr = self.arr_importance_weights
         imp_weighted_test_function_values = (
-            test_function_values * importance_weight_arr.view(self.num_particles)
+            test_function_values * importance_weights.view(self.num_particles)
         )
         if self.importance_resampling_at_last_step:
             # If importance resampling is used at the last step, we use the accumulated importance weights

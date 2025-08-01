@@ -145,7 +145,7 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, device, batch_size=40):
         try:
             
             model = AutoModelForCausalLM.from_pretrained(
-                model_name, device_map=device, torch_dtype=torch.bfloat16
+                model_name, device_map=device, torch_dtype=torch.bfloat16, 
             )
         except:
             model = AutoModelForCausalLM.from_pretrained(model_name, device_map=device)
@@ -154,7 +154,7 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, device, batch_size=40):
 
         # load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
-            model_name, padding_side="left", truncation_side="left"
+            model_name, padding_side="left", truncation_side="left", 
         )
         if not tokenizer.pad_token:
             tokenizer.pad_token = tokenizer.eos_token
