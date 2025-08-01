@@ -137,32 +137,26 @@ if __name__ == "__main__":
             adapter_name="default",
         )
         base_forward = create_model_wrapper(
-            model=model,
-            tokenizer=tokenizer,
-            enable_adapter=False
+            model=model, tokenizer=tokenizer, enable_adapter=False
         )
         proposal_forward = create_model_wrapper(
-            model=model,
-            tokenizer=tokenizer,
-            enable_adapter=True
+            model=model, tokenizer=tokenizer, enable_adapter=True
         )
     else:
         base_forward = create_model_wrapper(
-            model=model,
-            tokenizer=tokenizer,
-            enable_adapter=False
+            model=model, tokenizer=tokenizer, enable_adapter=False
         )
         proposal_forward = base_forward
 
-    mc_dataset = load_dataset("json", data_files=f"monte_carlo_estimates/results/emergent_misalignment/{args.model_name.split('/')[1]}-first_plot_questions-mc_est.json")[
-        "train"
-    ]
+    mc_dataset = load_dataset(
+        "json",
+        data_files=f"monte_carlo_estimates/results/emergent_misalignment/{args.model_name.split('/')[1]}-first_plot_questions-mc_est.json",
+    )["train"]
 
     max_new_tokens = args.max_new_tokens  # 150
     model_logs = {}
     for example_idx, example in enumerate(mc_dataset):
-
-        if example['harm_mean'] == 0.0:
+        if example["harm_mean"] == 0.0:
             continue
 
         example_model_logs = {}
@@ -174,7 +168,6 @@ if __name__ == "__main__":
             },
         ]
         arr_harmfulness_scores = []
-
 
         example_model_logs["Forbidden prompt"] = forbidden_prompt
         example_model_logs["MC mean"] = example["harm_mean"]

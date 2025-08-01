@@ -129,7 +129,9 @@ def token_sampler(decoding, proposal_output, proposal_inv_temperature):
     return next_tokens
 
 
-def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
+def create_model_wrapper(
+    model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[], enable_adapter=False
+):
     def model_forward(
         _input_ids,
         _attention_mask,
@@ -182,9 +184,13 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
 
             return token_logprobs
 
-        if len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
-            # Use the base model to generate the proposal distribution
+        if isinstance(model.active_adapters, list) and not enable_adapter:
+            with torch.no_grad(), model.disable_adapter():
+                output = model.forward(**model_inputs)
+        elif len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
+            # Use the base model to generate the proposal distribution or enabled LoRA adapter
             # NOTE: This is the default behavior, so we can skip adding hooks
+            assert enable_adapter or not isinstance(model.active_adapters, list)
             with torch.no_grad():
                 output = model.forward(**model_inputs)
         elif len(fwd_pre_hooks) > 0 and len(fwd_hooks) > 0:

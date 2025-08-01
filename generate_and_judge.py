@@ -1,6 +1,7 @@
 import gc
 import numpy as np
 from jaxtyping import Float
+from pathlib import Path
 import json
 import os
 from joblib import Parallel, delayed
@@ -9,12 +10,13 @@ from random import random
 import datetime
 import time
 from pathlib import Path
-import functools
+# import functools
+import copy
 
 from tqdm.auto import tqdm
 import torch
 from torch import Tensor
-from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, DynamicCache
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 
 from refusal_direction.pipeline.utils.hook_utils import (
@@ -29,23 +31,30 @@ from strong_reject.evaluate import strongreject_rubric
 from datasets import load_dataset
 
 
-def load_model_and_tokenizer(model_name_or_path):
+def load_model_and_tokenizer(model_name_or_path, device="cuda:0"):
     # NOTE: returns model in `eval` mode
     config = AutoConfig.from_pretrained(
-        model_name_or_path, output_hidden_states=True, return_dict_in_generate=True
+        model_name_or_path,
+        output_hidden_states=True,
+        return_dict_in_generate=True,
+        local_files_only=True,
     )
 
     if isinstance(config, Qwen2Config):
+        config = None
+    elif model_name_or_path.startswith("GraySwanAI/Llama-3-8B-Instruct-RR"):
         config = None
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         torch_dtype=torch.bfloat16,
+        # torch_dtype=torch.float32,
         low_cpu_mem_usage=True,
-        device_map="auto",
+        device_map=device,
         token=os.getenv("HF_TOKEN"),
         config=config,
         trust_remote_code=True,
+        local_files_only=True,
     ).eval()
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -53,6 +62,7 @@ def load_model_and_tokenizer(model_name_or_path):
         use_fast=False,
         token=os.getenv("HF_TOKEN"),
         padding_side="left",
+        local_files_only=True,
     )
 
     if tokenizer.pad_token is None:
@@ -71,8 +81,12 @@ def load_refusal_direction(refusal_direction_path):
     return metadata
 
 
-def get_all_direction_ablation_hooks(model, direction: Float[Tensor, "d_model"], ablation_intensity: float = 1.0):
-    # NOTE: Should work for Gemma and Llama models (should be able to just change the following three variables for other models)
+def get_all_direction_ablation_hooks(
+    model,
+    direction: Float[Tensor, "d_model"],
+    ablation_intensity: float,
+):
+    # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
     model_block_modules = model.model.layers
     model_attn_modules = torch.nn.ModuleList(
         [block_module.self_attn for block_module in model_block_modules]
@@ -84,21 +98,27 @@ def get_all_direction_ablation_hooks(model, direction: Float[Tensor, "d_model"],
     fwd_pre_hooks = [
         (
             model_block_modules[layer],
-            get_direction_ablation_input_pre_hook(direction=direction, ablation_intensity=ablation_intensity),
+            get_direction_ablation_input_pre_hook(
+                direction=direction, ablation_intensity=ablation_intensity
+            ),
         )
         for layer in range(model.config.num_hidden_layers)
     ]
     fwd_hooks = [
         (
             model_attn_modules[layer],
-            get_direction_ablation_output_hook(direction=direction, ablation_intensity=ablation_intensity),
+            get_direction_ablation_output_hook(
+                direction=direction, ablation_intensity=ablation_intensity
+            ),
         )
         for layer in range(model.config.num_hidden_layers)
     ]
     fwd_hooks += [
         (
             model_mlp_modules[layer],
-            get_direction_ablation_output_hook(direction=direction, ablation_intensity=ablation_intensity),
+            get_direction_ablation_output_hook(
+                direction=direction, ablation_intensity=ablation_intensity
+            ),
         )
         for layer in range(model.config.num_hidden_layers)
     ]
@@ -106,32 +126,66 @@ def get_all_direction_ablation_hooks(model, direction: Float[Tensor, "d_model"],
     return fwd_pre_hooks, fwd_hooks
 
 
+def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[]):
 
-def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[], enable_adapter=False):
     def model_forward(
         _input_ids,
         _attention_mask,
         _completed_generation,
         decoding,
         inv_temperature,
+        cache_position=None,
+        past_key_values=None,
+        use_cache=False,
+        return_logprob_only=False,
     ):
+        if cache_position is not None and len(cache_position) == 1:
+            cache_input_ids = _input_ids[:, -1].unsqueeze(
+                1
+            )  # Get the last token for generation
+        else:
+            cache_input_ids = _input_ids
+            
+
+        _completed_generation = _completed_generation.to(model.device)
         model_inputs = dict(
-            input_ids=_input_ids,
-            attention_mask=_attention_mask,
+            input_ids=cache_input_ids.to(model.device),  # Get the last token for generation
+            attention_mask=_attention_mask.to(model.device),
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.pad_token_id,
             output_scores=True,
             return_dict_in_generate=True,
             output_hidden_states=False,
         )
+        if use_cache:
+            model_inputs["past_key_values"] = past_key_values
+            model_inputs["cache_position"] = cache_position.to(model.device)
+            model_inputs["use_cache"] = use_cache
 
-        if isinstance(model.active_adapters, list) and not enable_adapter:
-            with torch.no_grad(), model.disable_adapter():
-                output = model.forward(**model_inputs)
-        elif len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
-            # Use the base model to generate the proposal distribution or enabled LoRA adapter
+        if return_logprob_only:
+            # If we only want the log probabilities, we can skip the generation step
+            with torch.no_grad():
+                output = model(_input_ids,
+                               _attention_mask,
+                               use_cache=use_cache)
+            
+            
+            shift_logits = output.logits[:, :-1, :]
+            shift_labels = _input_ids[:, 1:]
+            
+            logprobs = torch.log_softmax(
+                inv_temperature * shift_logits, dim=-1
+            )
+            token_logprobs = logprobs.gather(2, shift_labels.unsqueeze(-1)).squeeze(-1)
+            assert token_logprobs.shape == (
+                _input_ids.shape[0], _input_ids.shape[1] - 1
+            ), token_logprobs.shape
+
+            return token_logprobs
+
+        if len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
+            # Use the base model to generate the proposal distribution
             # NOTE: This is the default behavior, so we can skip adding hooks
-            assert enable_adapter or not isinstance(model.active_adapters, list)
             with torch.no_grad():
                 output = model.forward(**model_inputs)
         elif len(fwd_pre_hooks) > 0 and len(fwd_hooks) > 0:
@@ -146,17 +200,18 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[], enabl
         logprobs_distribution = torch.log_softmax(
             inv_temperature * output.logits[:, -1, :], dim=-1
         )
+
         next_tokens = token_sampler(
             decoding=decoding,
             proposal_output=output,
             proposal_inv_temperature=inv_temperature,
         )
         next_token_logprobs = torch.gather(
-            logprobs_distribution * inv_temperature, -1, next_tokens.unsqueeze(-1)
+            logprobs_distribution, -1, next_tokens.unsqueeze(-1)
         ).squeeze(-1)
-        
+
         assert next_token_logprobs.shape == (logprobs_distribution.shape[0],)
-        
+
         # Ensure next_tokens is of shape (num_particles, 1)
         next_tokens = next_tokens.unsqueeze(-1)
 
@@ -168,47 +223,71 @@ def create_model_wrapper(model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[], enabl
 
         # Ensure proposal_logprobs is of shape (num_particles, 1)
         next_token_logprobs = next_token_logprobs.unsqueeze(-1)
+        next_token_logprobs[_completed_generation] = 0.0  # Set logprobs to 0 for completed sequences
 
+        # Update cache position
+        if use_cache:
+            cache_position = cache_position[-1:] + 1
         # Clear cache to avoid OOM errors
         gc.collect()
         torch.cuda.empty_cache()
 
-        return logprobs_distribution, next_tokens, next_token_logprobs, _completed_generation
+        return (
+            logprobs_distribution,
+            next_tokens,
+            next_token_logprobs,
+            _completed_generation,
+            cache_position,
+            past_key_values,
+        )
 
     return model_forward
 
 
+# def create_reward_fn(
+#     tokenizer,
+#     forbidden_prompt: str = "",
+#     prompt_len: int = -1,
+#     batch_size: int = 32,
+#     device='cuda:1',
+# ):
+#     def reward_fn(_input_ids):
+#         num_chunks = int((_input_ids.shape[0] / batch_size) + 1)
+#         all_scores = []
+#         for b_input_ids in _input_ids.chunk(num_chunks):
+#             batch_scores = sr_harmful_reward_fn(
+#                 forbidden_prompt,
+#                 tokenizer.batch_decode(b_input_ids[:, prompt_len:]),
+#                 device=device,
+#             )
+#             all_scores.append(batch_scores)
+#         return torch.cat(all_scores)
 
-def create_reward_fn(
-    tokenizer,
-    forbidden_prompt: str = "",
-    prompt_len: int = -1,
-    batch_size: int = 32,
-):
-    def reward_fn(_input_ids):
-        num_chunks = int((_input_ids.shape[0] / batch_size) + 1)
-        all_scores = []
-        for b_input_ids in _input_ids.chunk(num_chunks):
-            batch_scores = sr_harmful_reward_fn(
-                    forbidden_prompt,
-                    tokenizer.batch_decode(b_input_ids[:, prompt_len:], skip_special_tokens=True),
-            )
-            all_scores.append(batch_scores)
-        return torch.cat(all_scores)
-
-    return reward_fn
+#     return reward_fn
 
 
 def score_responses(
-    tokenizer,
-    forbidden_prompt: str,
-    input_ids: torch.Tensor,
-    n_jobs: int = 50
+    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50, reward_batch_size: int = 32, cheap_judge=True, device='cuda:1'
 ):
-    scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
-    responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
-    judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
-    judge_scores = torch.tensor(judge_scores, device=input_ids.device)
+    if cheap_judge:
+        judge_scores_on_device = sr_harmful_reward_fn(
+            forbidden_prompt=forbidden_prompt,
+            responses=tokenizer.batch_decode(input_ids),
+            device=device,
+            batch_size=reward_batch_size,
+        )
+        judge_scores = judge_scores_on_device.to(input_ids.device)
+
+        # assert judge_scores.cpu().numpy().all() == judge_scores_on_device.cpu().numpy().all(), "judge_scores are not the same"
+        # print('score_responses pre to device', judge_scores_on_device)
+        # print('score_responses', judge_scores)
+    else:
+        scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
+        responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
+        judge_scores = Parallel(n_jobs=n_jobs)(
+            delayed(scoring_fn)(r) for r in responses
+        )
+        judge_scores = torch.tensor(judge_scores, device=input_ids.device)
     return judge_scores
 
 
@@ -234,20 +313,47 @@ def token_sampler(decoding, proposal_output, proposal_inv_temperature):
     return next_tokens
 
 
+def update_cache_after_resampling(
+    past_key_values: DynamicCache, indices: torch.Tensor, model_config
+):
+    new_past_key_values = DynamicCache()
+    for layer_idx in range(model_config.num_hidden_layers):
+
+        keys, values = past_key_values[layer_idx]
+        resampled_keys = keys[indices].clone()
+        resampled_values = values[indices].clone()
+        # past_key_values[layer_idx] = (keys, values)
+        new_past_key_values.update(resampled_keys, resampled_values, layer_idx)
+
+        del keys, values, resampled_keys, resampled_values
+
+        if layer_idx % 4 == 0:
+            torch.cuda.empty_cache()
+    del past_key_values
+    past_key_values = new_past_key_values
+    torch.cuda.empty_cache()
+
+    return past_key_values
+
+
 def generate(
+    model_config,
+    base_model_config,
+    tokenizer,
+    forbidden_prompt,
     base_forward,
     proposal_forward,
-    tokenizer,
-    r_fn,
-    forbidden_prompt,
-    input_ids,
-    attention_mask,
+    # r_fn,
+    input_ids, # dict of input_ids for proposal and base !!!
+    attention_mask, # dict of attention_mask for proposal and base !!!
     num_particles,
     use_smc: bool,
-    proposal_inv_temperature=1.0,
+    # fwd_pre_hooks=[],
+    proposal_inv_temperature=3.5,
+    # fwd_hooks=[],
     max_new_tokens: int = 10,
     decoding: str = "sample",  # Options: 'greedy', 'sample', 'beam_search', 'top_k', 'top_p'
-    proposal_model="toxic_model",  # Options: 'base', 'toxic_model'
+    # proposal_model="toxic_model",  # Options: 'base', 'toxic_model'
     proposal_model_switch_idx=None,  # If None, use the proposal model for all steps
     resample_start=10,
     resample_end=20,
@@ -258,123 +364,209 @@ def generate(
     base_inv_temperature=1.0,
     smc_verbose=False,
     importance_resampling_at_last_step=False,
+    use_cache=False,
+    cheap_judge=True,
+    reward_fn_device='cuda:1',
+    # base_model_device='cuda:0',
+    # proposal_model_device='cuda:0',
+    reward_batch_size=32,
 ):
     """Implements simple greedy decoding."""
 
-    _input_ids = input_ids.detach().clone()
-    _attention_mask = attention_mask.detach().clone()
-    _completed_generation = torch.zeros((num_particles, 1), dtype=torch.bool).to(
-        _input_ids.device
+    # model.eval()  # Ensure model is in eval mode
+
+    #     # _input_ids = input_ids.detach().clone()
+    #     # _attention_mask = attention_mask.detach().clone()
+    #     # _completed_generation = torch.zeros((num_particles, 1), dtype=torch.bool).to(
+    #     #     model.device
+    #     # )
+
+    assert isinstance(input_ids, dict), "input_ids must be a dictionary"
+    assert set(input_ids.keys()) == set(["base", "proposal"]), (
+        "input_ids must be a dictionary with keys 'base' and 'proposal'"
+    )
+    assert set(attention_mask.keys()) == set(["base", "proposal"]), (
+        "input_ids must be a dictionary with keys 'base' and 'proposal'"
     )
 
-    assert _input_ids.shape[0] == num_particles, (_input_ids.shape[0], num_particles)
-    prompt_len = len(_input_ids[0])
+    # devices = {'base': base_model_device, 'proposal': proposal_model_device}
 
-    fk_class = FKSteering(
-        device=_input_ids.device,
-        r_fn=r_fn,
-        potential_type="diff",
-        max_seq_len=max_new_tokens,
-        num_particles=num_particles,
-        resample_start=resample_start,
-        resample_end=resample_end,
-        resample_interval=resample_interval,
-        lmbda=lmbda,
-        use_smc=use_smc,
-        adaptive_resampling=adaptive_resampling,
-        adaptive_resampling_threshold=adaptive_resampling_threshold,
-        smc_verbose=smc_verbose,
-        importance_resampling_at_last_step=importance_resampling_at_last_step,
-    )
+    # _input_ids = {k: v.detach().clone().to(devices[k]) for k, v in input_ids.items()}
+    # _attention_mask = {k: v.detach().clone().to(devices[k]) for k, v in attention_mask.items()}
+    # _completed_generation = {k: torch.zeros((num_particles, 1), dtype=torch.bool).to(devices[k]) for k in input_ids.keys()}
+     
+    _input_ids = {k: v.detach().clone() for k, v in input_ids.items()}
+    _attention_mask = {k: v.detach().clone() for k, v in attention_mask.items()}
+    _completed_generation = {k: torch.zeros((num_particles, 1), dtype=torch.bool) for k in input_ids.keys()}
+     
+    if use_cache:
+        cache_position = {k: torch.arange(
+            v.shape[1], dtype=torch.int64, device=v.device
+        ) for k, v in _input_ids.items()}
+        past_key_values = {k: DynamicCache() for k in _input_ids.keys()}
+
+    else:
+        cache_position = {k: None for k in _input_ids.keys()}
+        past_key_values = {k: None for k in _input_ids.keys()}
+
+    assert all(_input_ids[k].shape[0] == num_particles for k in _input_ids.keys()), "All input_ids must have the same number of particles"
+    prompt_len = {k: len(v[0]) for k, v in _input_ids.items()}
+
+#     fk_class = FKSteering(
+#         device=base_model_device,
+#         r_fn=lambda x: sr_harmful_reward_fn(
+#             forbidden_prompt=forbidden_prompt,
+#             # responses=tokenizer.batch_decode(x[:, prompt_len:]),
+#             responses=tokenizer.batch_decode(x[:, prompt_len["proposal"]:]), # is this a safe assumption?
+#             device=reward_fn_device,
+#         ).to(proposal_model_device),
+#         potential_type="diff",
+#         max_seq_len=max_new_tokens,
+#         num_particles=num_particles,
+#         resample_start=resample_start,
+#         resample_end=resample_end,
+#         resample_interval=resample_interval,
+#         lmbda=lmbda,
+#         use_smc=use_smc,
+#         adaptive_resampling=adaptive_resampling,
+#         adaptive_resampling_threshold=adaptive_resampling_threshold,
+#         smc_verbose=smc_verbose,
+#         importance_resampling_at_last_step=importance_resampling_at_last_step,
+#     )
+
     # Main generation loop
-    importance_weights = torch.ones(num_particles, device=_input_ids.device)     
+    importance_weights = torch.ones(num_particles, device=_input_ids["proposal"].device)
+    sequence_proposal_logprob = torch.zeros(num_particles, device=_input_ids["proposal"].device)
+    
     for step_idx in tqdm(range(max_new_tokens)):
 
         if (
             step_idx == proposal_model_switch_idx
             and proposal_model_switch_idx is not None
         ):
-            print(
-                f"Switching proposal model to 'base' at step {step_idx} at temperature {base_inv_temperature}."
-            )
-            # Switch to the base model for proposal generation
-            # NOTE: This is useful for the first few steps where the proposal model might not be
-            proposal_forward = base_forward
-            proposal_inv_temperature = base_inv_temperature
+            raise NotImplementedError
+            # print(
+            #     f"Switching proposal model to 'base' at step {sample_idx} at temperature {base_inv_temperature}."
+            # )
+            # # Switch to the base model for proposal generation
+            # # NOTE: This is useful for the first few steps where the proposal model might not be
+            # proposal_forward = base_forward
+            # proposal_inv_temperature = base_inv_temperature
 
-        _, next_tokens, proposal_logprobs, _completed_generation = proposal_forward(
-            _input_ids=_input_ids,
-            _attention_mask=_attention_mask,
-            _completed_generation=_completed_generation,
+        ret = proposal_forward(
+            _input_ids=_input_ids["proposal"],
+            _attention_mask=_attention_mask["proposal"],
+            _completed_generation=_completed_generation["proposal"],
             decoding=decoding,
             inv_temperature=proposal_inv_temperature,
+            cache_position=cache_position["proposal"],
+            past_key_values=past_key_values["proposal"],
+            use_cache=use_cache,
         )
 
-        if proposal_forward != base_forward:
-            logprobs_distribution, _, _, _ = base_forward(
-                _input_ids=_input_ids,
-                _attention_mask=_attention_mask,
-                _completed_generation=_completed_generation,
-                decoding=decoding,
-                inv_temperature=proposal_inv_temperature,
+        (
+            _,
+            next_tokens,
+            proposal_logprobs,
+            _completed_generation_proposal,
+            cache_position_proposal,
+            past_key_values_proposal,
+        ) = ret
+
+        _completed_generation["proposal"] = _completed_generation_proposal
+        cache_position["proposal"] = cache_position_proposal
+        past_key_values["proposal"] = past_key_values_proposal
+
+        _input_ids = {k: torch.cat((v, next_tokens), dim=1) for k, v in _input_ids.items()}
+        _attention_mask = {k: torch.cat((v, torch.ones_like(next_tokens)), dim=1) for k, v in _attention_mask.items()}
+
+        sequence_proposal_logprob += proposal_logprobs.squeeze(-1).to(sequence_proposal_logprob.device)
+        assert sequence_proposal_logprob.shape == (num_particles, ), (
+            sequence_proposal_logprob.shape,
+        )   
+
+        indices = torch.arange(num_particles, device=_input_ids["proposal"].device)
+        # device_indices = {'base': indices.to(base_model_device), 'proposal': indices.to(proposal_model_device)}
+
+        if not use_smc:
+            # No resampling needed, just continue
+            pass
+        elif (
+            use_smc
+            and torch.all(
+                indices == torch.arange(num_particles, device=indices.device)
+            ).item()
+        ):
+            # No resampling needed, just continue
+            pass
+        elif use_smc:
+            # raise NotImplementedError("change base as well")
+            past_key_values["proposal"] = update_cache_after_resampling(
+                past_key_values=past_key_values["proposal"],
+                indices=indices,
+                model_config=model_config,
             )
-            base_logprobs = torch.gather(
-                logprobs_distribution, -1, next_tokens
+            past_key_values["base"] = update_cache_after_resampling(
+                past_key_values=past_key_values["base"],
+                indices=indices,
+                model_config=base_model_config,
             )
+            sequence_proposal_logprob = sequence_proposal_logprob[indices]
+        
+            # update _completed_generation to only include the resampled sequences
+            _completed_generation = {k: v[indices] for k, v in _completed_generation.items()}
+
+            # change the input_ids and attention_mask to only include the resampled sequences
+            _input_ids = {k: v[indices] for k, v in _input_ids.items()}
+            _attention_mask = {k: v[indices] for k, v in _attention_mask.items()}
         else:
-            base_logprobs = proposal_logprobs.clone()
-            
-        # Update input arguments
-        _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
-        _attention_mask = torch.cat(
-            (_attention_mask, torch.ones_like(next_tokens)), dim=1
-        )
+            raise ValueError("Unknown resampling strategy.")
 
-        # NOTE: The following line is important to ensure that the input_ids and attention_mask are of the correct shape
-        # NOTE: do not remove this line as we accumulate the product of importance weights
+        # assert torch.all(
+        #     importance_weights >= 0
+        # ), "Importance weights should be non-negative."
+        # assert importance_weights.shape == (num_particles,), (
+        #     importance_weights.shape,
+        #     num_particles,
+        # )
 
-        importance_weight_at_cur_step = torch.exp(
-            base_logprobs - proposal_logprobs
-        ).view(num_particles)
-        assert importance_weight_at_cur_step.shape == (num_particles,)
+    sequence_base_logprob = base_forward(
+        _input_ids=_input_ids["base"],
+        _attention_mask=_attention_mask["base"],
+        _completed_generation=_completed_generation["base"],
+        decoding=decoding,
+        inv_temperature=base_inv_temperature,
+        return_logprob_only=True,
+    )
+    
+    # TODO 
+    for batch_idx in range(sequence_base_logprob.shape[0]):
+        sequence_base_logprob[batch_idx, _input_ids["base"][batch_idx, 1:] == tokenizer.eos_token_id] = 0.0
+        # I dont think this works.
 
-        _input_ids, indices = fk_class(
-            step_idx=step_idx,
-            sequences=_input_ids,
-            importance_weights=importance_weight_at_cur_step,
-        )
+    sequence_base_logprob = sequence_base_logprob[:, prompt_len["base"] -1:].sum(dim=1)
+    # set to sequence base logprob to 0 for eot-id    
+    
+    assert sequence_base_logprob.shape == (num_particles, ), (sequence_base_logprob.shape, num_particles)
+    importance_weights = torch.exp(sequence_base_logprob.to(sequence_proposal_logprob.device) - sequence_proposal_logprob)
+    assert importance_weights.shape == (num_particles,), (
+        importance_weights.shape,
+        num_particles,
+    )
 
-        importance_weights = importance_weights[indices] * torch.exp(
-            base_logprobs - proposal_logprobs
-        ).view(num_particles)
-
-        assert torch.all(
-            importance_weights >= 0
-        ), "Importance weights should be non-negative."
-        assert importance_weights.shape == (num_particles,), (
-            importance_weights.shape,
-            num_particles,
-        )
-
-        # change the input_ids and attention_mask to only include the resampled sequences
-        _attention_mask = _attention_mask[indices]
-        # update _completed_generation to only include the resampled sequences
-        _completed_generation = _completed_generation[indices]
-
+    prompt_kl = -importance_weights.log().mean().item()
 
     # Judge the responses
     judge_scores = score_responses(
-        tokenizer,
-        forbidden_prompt,
-        input_ids=_input_ids[:, input_ids.shape[1]:]
+        tokenizer=tokenizer, forbidden_prompt=forbidden_prompt, input_ids=_input_ids['proposal'][:, input_ids['proposal'].shape[1] :], cheap_judge=cheap_judge, device=reward_fn_device, reward_batch_size=reward_batch_size
     )
 
     responses = [
         tokenizer.decode(r, skip_special_tokens=True)
-        for r in _input_ids[:, input_ids.shape[1] :]
+        for r in _input_ids['proposal'][:, input_ids['proposal'].shape[1] :]
     ]
 
-    print("Sequence generated: ", responses[0])
+    print("Sequence generated: ", responses[0], "with score: ", judge_scores[0].item())
 
     assert judge_scores.shape == (num_particles,), (
         judge_scores.shape,
@@ -383,31 +575,31 @@ def generate(
 
     if not use_smc:
         # If not using SMC, just return the input_ids
-        reweighted_scores = (judge_scores * importance_weights).cpu()
+        reweighted_scores = (judge_scores.cpu() * importance_weights.cpu())
         # import pdb; pdb.set_trace()
         sis_approx_harm_score = reweighted_scores.mean().item()
         sis_approx_harm_variance = reweighted_scores.var().item()
-        print(f"SIS harm score estimate: {sis_approx_harm_score}")
+        print(
+            f"SIS harm score estimate: {sis_approx_harm_score}, importance weights: {importance_weights.mean().item()}"
+        )
         print(f"SIS harm score variance: {sis_approx_harm_variance}")
 
         # biased_sis_approx_harm_variance = biased_reweighted_scores.var().item()
         print(f"Judge scores: {judge_scores.mean()} ± {judge_scores.std()}")
+        print(f"KL divergence: {prompt_kl}")
         # print(f"Biased SIS harm score variance: {biased_sis_approx_harm_variance}")
 
-        # print(
-        #     "Sequence generated:",
-        #     tokenizer.decode(_input_ids[0], skip_special_tokens=False),
-        # )
-
-        return _input_ids, sis_approx_harm_score
+        return _input_ids, sis_approx_harm_score, prompt_kl, judge_scores, importance_weights, sis_approx_harm_variance
     else:
-        fk_estimate = fk_class.compute_fk_estimate(
-            test_function_values=judge_scores,
-        )
-        print("Judge scores:", judge_scores.mean(), judge_scores.std())
-        print(f"FK harm score estimate: {fk_estimate}")
+        raise NotImplementedError
+        # fk_estimate = fk_class.compute_fk_estimate(
+        #     test_function_values=judge_scores,
+        #     importance_weights=importance_weights,
+        # )
+        # print("Judge scores:", judge_scores.mean(), judge_scores.std())
+        # print(f"FK harm score estimate: {fk_estimate}")
 
-        return _input_ids, fk_estimate.cpu().item()
+        # return _input_ids['proposal'], fk_estimate.cpu().item()
 
 
 def seed_everything(seed: int = 42):
@@ -423,12 +615,30 @@ def seed_everything(seed: int = 42):
 
     np.random.seed(seed)
 
+def instruct_to_model_base(model_name):
+    if model_name == 'meta-llama/Llama-3.2-1B-Instruct':
+        return 'meta-llama/Llama-3.2-1B'
+    else:
+        raise ValueError(f"Base checkpoint not specified for model name {model_name}")
 
 def get_exp_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility."
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="strong_reject",
+        choices=["strong_reject"],
+        help="Dataset to use for generation.",
+    )
+    parser.add_argument(
+        "--ablation_intensity",
+        type=float,
+        default=0.7,
+        help="Intensity of the ablation.",
     )
     parser.add_argument(
         "--max_new_tokens",
@@ -440,16 +650,42 @@ def get_exp_args():
         "--num_particle_arr",
         type=int,
         nargs="+",
-        default=[500, 500, 500],
+        default=[200, 200, 200, 200, 200],
         help="Number of particles for each generation step.",
     )
     parser.add_argument(
         "--proposal_model",
         type=str,
         default="toxic_model",
-        choices=["base", "toxic_model"],
+        choices=["base", "toxic_model", "pre_instruct", "base_prefilled"],
         help="Model to use for proposal generation.",
     )
+    parser.add_argument(
+        "--base_model_device",
+        type=str,
+        default="auto",
+        help="Device to use for base model.",
+    )
+    parser.add_argument(
+        "--proposal_model_device",
+        type=str,
+        default="auto",
+        help="Device to use for base model.",
+    )
+    parser.add_argument(
+        "--reward_fn_device",
+        type=str,
+        default="auto",
+        help="Device to use for reward function.",
+    )
+
+    parser.add_argument(
+        "--reward_batch_size",
+        type=int,
+        default=32,
+        help="Batch size for reward function.",
+    )
+
     parser.add_argument(
         "--use_smc",
         action="store_true",
@@ -461,6 +697,31 @@ def get_exp_args():
         type=str,
         default="meta-llama/Llama-3.2-1B-Instruct",
         help="which model to score.",
+    )
+    parser.add_argument(
+        "--base_model_name",
+        type=str,
+        default=None,
+        help="which model to score.",
+    )
+
+    parser.add_argument(
+        "--model_idx",
+        type=int,
+        default=0,
+        help="Index of the model to use",
+    )
+    parser.add_argument(
+        "--cheap_judge",
+        action="store_true",
+        default=False,
+        help="Whether to use a cheap judge for scoring.",
+    )
+    parser.add_argument(
+        "--use_cache",
+        action="store_true",
+        default=True,
+        help="Whether to use cache for generation.",
     )
     parser.add_argument(
         "--save_output",
@@ -480,18 +741,19 @@ def get_exp_args():
     )
 
     args = parser.parse_args()
+    args = get_model_name(args)
 
     smc_args = dict(
         decoding="sample",
         resample_start=10 if args.proposal_model == "base" else 10,
         resample_end=args.max_new_tokens - 10,
-        resample_interval=10 if args.proposal_model == "base" else 20,
+        resample_interval=10 if args.proposal_model == "base" else 10,
+        lmbda=10 if args.proposal_model == "base" else 4,
         adaptive_resampling=True,
-        lmbda=10 if args.proposal_model == "base" else 10,
-        base_inv_temperature=1.0,
         adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.5,
+        base_inv_temperature=1.0,
         proposal_inv_temperature=1.0,
-        proposal_model_switch_idx=20,
+        proposal_model_switch_idx=None,
     )
 
     metadata = {**smc_args, **vars(args)}
@@ -528,6 +790,78 @@ def get_exp_args():
     return combined_args, output_dir
 
 
+def get_model_name(args):
+    if args.model_idx == 0:
+        args.model_name = "meta-llama/Llama-3.2-1B-Instruct"
+        args.base_model_name = None
+    elif args.model_idx == 1:
+        args.model_name = "meta-llama/meta-llama-3-8b-instruct"
+        args.base_model_name = None
+    elif args.model_idx == 2:
+        args.model_name = "google/gemma-2-9b-it"
+        args.base_model_name = None
+        print("Using Gemma-2-9b-it model with 500 particles for all steps.")
+        # args.num_particle_arr = [500] * len(args.num_particle_arr)
+    elif args.model_idx == 3:
+        args.model_name = "google/gemma-2-2b-it"
+        args.base_model_name = None
+    elif args.model_idx == 4:
+        args.base_model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
+        args.model_name = "meta-llama/meta-llama-3-8b-instruct"
+    elif args.model_idx == 5:
+        args.model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
+        args.base_model_name = None
+        raise ValueError('"GraySwanAI/Llama-3-8B-Instruct-RR" is not supported yet.')
+    else:
+        raise ValueError(
+            f"Unknown model index {args.model_idx}. Please choose a valid model index."
+        )
+
+    return args
+
+def get_base_prompt(messages, tokenizer, num_particles):
+    convos = tokenizer.apply_chat_template(
+        [messages for _ in range(num_particles)],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+    # Prepare the inputs
+    inputs = tokenizer(convos, return_tensors="pt", padding=True)
+    inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+    input_ids = inputs["input_ids"][:, 1:]
+    attention_mask = inputs["attention_mask"][:, 1:]
+    return input_ids, attention_mask
+
+def get_proposal_prompt(messages, tokenizer, num_particles, is_instruct_model=True, context="", prefill = ""):
+    assert len(messages) == 1, "Only one message is supported"
+    assert messages[0]["role"] == "user", "Only user message is supported"
+
+    forbidden_prompt = messages[0]["content"]
+    updated_prompt = context.format(forbidden_prompt)
+
+    if is_instruct_model:
+        messages = copy.deepcopy(messages)
+        messages[-1]["content"] = updated_prompt
+        convos = tokenizer.apply_chat_template(
+            [messages for _ in range(num_particles)],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        convos = [c + prefill for c in convos]
+    else:
+        convos = [updated_prompt for _ in range(num_particles)]
+        convos = [c + prefill for c in convos]
+
+    inputs = tokenizer(convos, return_tensors="pt", padding=True)
+    inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+    input_ids = inputs["input_ids"][:, 1:]
+    attention_mask = inputs["attention_mask"][:, 1:]
+    return input_ids, attention_mask
+
+
 if __name__ == "__main__":
 
     args, output_dir = get_exp_args()
@@ -537,45 +871,63 @@ if __name__ == "__main__":
     refusal_direction_path = (
         f"refusal_direction/pipeline/runs/{args.model_name.split('/')[1]}/"
     )
+    assert Path(refusal_direction_path).exists(), refusal_direction_path
 
     # Load model and tokenizer from huggingface
-    model, tokenizer = load_model_and_tokenizer(model_name_or_path)
+    model, tokenizer = load_model_and_tokenizer(model_name_or_path, device=args.base_model_device)
 
     # Load refusal direction for proposal model
     refusal_direction = load_refusal_direction(refusal_direction_path)
 
     # Construct torch hooks for ablating refusal
-    ablation_intensity = 0.8
     ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(
-        model, refusal_direction["direction"], ablation_intensity=ablation_intensity
+        model,
+        refusal_direction["direction"],
+        ablation_intensity=args.ablation_intensity,
     )
 
     # Create the forward wrappers
+    if args.base_model_name is not None:
+        base_model, base_tokenizer = load_model_and_tokenizer(
+            args.base_model_name,
+            device=args.base_model_device,
+        )
+    else:
+        base_model, base_tokenizer = model, tokenizer
+
     base_forward = create_model_wrapper(
-        model=model,
-        tokenizer=tokenizer,
+        model=base_model,
+        tokenizer=base_tokenizer,
     )
+
     if args.proposal_model == "toxic_model":
+        args.proposal_model_device = args.base_model_device
         proposal_forward = create_model_wrapper(
             model=model,
             tokenizer=tokenizer,
             fwd_pre_hooks=ablation_fwd_pre_hooks,
-            fwd_hooks=ablation_fwd_hooks
+            fwd_hooks=ablation_fwd_hooks,
+        )
+    elif args.proposal_model == "pre_instruct":
+        pre_instruct_checkpoint = instruct_to_model_base(args.model_name)
+        pre_instruct_model, pre_instruct_tokenizer = load_model_and_tokenizer(pre_instruct_checkpoint, device=args.proposal_model_device)
+        proposal_forward = create_model_wrapper(
+            model=pre_instruct_model,
+            tokenizer=pre_instruct_tokenizer,
         )
     else:
+        args.proposal_model_device = args.base_model_device
         proposal_forward = base_forward
 
-    mc_dataset = load_dataset("json", data_files=f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_{args.model_name.split('/')[1]}.json")[
-        "train"
-    ]
+    mc_dataset = load_dataset(
+        "json",
+        # data_files=f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_{args.model_name.split('/')[1]}.json",
+        data_files=f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_Llama-3.1-8B-Instruct.json",
+    )["train"]
 
     max_new_tokens = args.max_new_tokens  # 150
     model_logs = {}
-    for example_idx, example in enumerate(mc_dataset):
-
-        if example['harm_mean'] == 0.0:
-            continue
-
+    for example_idx, example in enumerate(tqdm(mc_dataset)):
         example_model_logs = {}
         forbidden_prompt = example["forbidden_prompt"]
         messages = [
@@ -586,32 +938,33 @@ if __name__ == "__main__":
         ]
         arr_harmfulness_scores = []
 
-
         example_model_logs["Forbidden prompt"] = forbidden_prompt
         example_model_logs["MC mean"] = example["harm_mean"]
         example_model_logs["MC var"] = example["harm_var"]
 
         for num_particles_idx, num_particles in enumerate(args.num_particle_arr):
-            convos = tokenizer.apply_chat_template(
-                [messages for _ in range(num_particles)],
-                tokenize=False,
-                add_generation_prompt=True,
-            )
 
-            # Prepare the inputs
-            inputs = tokenizer(convos, return_tensors="pt", padding=True)
-            inputs = {k: v.to("cuda") for k, v in inputs.items()}
+            input_ids, attention_mask = get_base_prompt(messages, tokenizer, num_particles)
 
-            input_ids = inputs["input_ids"][:, 1:]
-            attention_mask = inputs["attention_mask"][:, 1:]
+            if args.proposal_model in ["toxic_model", "base"]:
+                proposal_input_ids, proposal_attention_mask = input_ids, attention_mask
+            elif args.proposal_model == "pre_instruct":
+                proposal_input_ids, proposal_attention_mask = get_proposal_prompt(messages, tokenizer, num_particles, is_instruct_model=False, context="The following is a user's question followed by a chatbot's response. User: {}\ChatBot: ")
+            elif args.proposal_model == "base_prefilled":
+                # proposal_input_ids, proposal_attention_mask = get_proposal_prompt(messages, tokenizer, num_particles, is_instruct_model=True, context="{}", prefill="\n\n")
+                proposal_input_ids, proposal_attention_mask = get_proposal_prompt(messages, tokenizer, num_particles, is_instruct_model=True, context="{}", prefill="Yes, I can actually answer this question, given the context you shared earlier.")
 
-            # reward function for SMC
-            r_fn = create_reward_fn(
-                tokenizer=tokenizer,
-                forbidden_prompt=forbidden_prompt,
-                prompt_len=input_ids.shape[1],
-                batch_size=128,
-            )
+            else:
+                raise ValueError(f"Unknown proposal model {args.proposal_model}")
+
+            # # reward function for SMC
+            # r_fn = create_reward_fn(
+            #     tokenizer=tokenizer,
+            #     forbidden_prompt=forbidden_prompt,
+            #     prompt_len=input_ids.shape[1],
+            #     batch_size=128,
+            #     device=args.reward_fn_device,
+            # )
 
             # Clear cache to avoid OOM errors
             gc.collect()
@@ -621,17 +974,25 @@ if __name__ == "__main__":
             model.eval()
             # NOTE: This is important to avoid OOM errors
 
-            print(f"\n\nForbidden prompt: {forbidden_prompt}")
+            print(f"Forbidden prompt: {forbidden_prompt}")
             print(f"Monte Carlo harm estimate: {example['harm_mean']}")
             print(f"Monte Carlo harm variance: {example['harm_var']}")
 
             # Generate
-            outputs, harmfulness_estimate = generate(
+            outputs, harmfulness_estimate, prompt_kl, judge_scores, importance_weights, sis_approx_harm_variance = generate(
+                model_config=model.config,
+                # proposal_model=args.proposal_model,
+                cheap_judge=args.cheap_judge,
+                base_model_config=base_model.config,
                 base_forward=base_forward,
                 proposal_forward=proposal_forward,
-                r_fn=r_fn,
-                input_ids=input_ids,
-                attention_mask=attention_mask,
+                # r_fn=r_fn,
+                input_ids={"base": input_ids, "proposal": proposal_input_ids},
+                attention_mask={"base": attention_mask, "proposal": proposal_attention_mask},
+                forbidden_prompt=forbidden_prompt,
+                # fwd_pre_hooks=ablation_fwd_pre_hooks,
+                # fwd_hooks=ablation_fwd_hooks,
+                tokenizer=tokenizer,
                 num_particles=num_particles,
                 max_new_tokens=max_new_tokens,
                 decoding="sample",  # Change to 'greedy' if you want to use greedy decoding
@@ -646,6 +1007,11 @@ if __name__ == "__main__":
                 base_inv_temperature=args.base_inv_temperature,
                 proposal_inv_temperature=args.proposal_inv_temperature,
                 smc_verbose=args.smc_verbose,
+                use_cache=args.use_cache,
+                reward_fn_device=args.reward_fn_device,
+                # base_model_device=args.base_model_device,
+                # proposal_model_device=args.proposal_model_device,
+                reward_batch_size=args.reward_batch_size,
             )
 
             arr_harmfulness_scores.append(harmfulness_estimate)
@@ -653,11 +1019,20 @@ if __name__ == "__main__":
             example_model_logs[
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}"
             ] = harmfulness_estimate
+            example_model_logs[
+                f"new_harm_estimates_{num_particles}_{num_particles_idx}_prompt_kl"
+            ] = prompt_kl
+            example_model_logs[
+                f"new_harm_estimates_{num_particles}_{num_particles_idx}_judge_scores"
+            ] = judge_scores.cpu().tolist()
+            example_model_logs[
+                f"new_harm_estimates_{num_particles}_{num_particles_idx}_importance_weights"
+            ] = importance_weights.cpu().tolist()
 
         model_logs[example_idx] = example_model_logs
 
         print(
-            f"Monte Carlo harm estimates for {forbidden_prompt}: {arr_harmfulness_scores}"
+            f"New Monte Carlo harm estimates for {forbidden_prompt}: {arr_harmfulness_scores}"
         )
 
         if args.save_output:
