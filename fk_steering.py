@@ -1,10 +1,9 @@
 import numpy as np
 import torch
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Optional
 
 
 class FKSteering:
-
     def __init__(
         self,
         device,
@@ -26,6 +25,7 @@ class FKSteering:
         self.importance_resampling_at_last_step = importance_resampling_at_last_step
 
         self.device = device
+
         self.r_fn = r_fn
         self.lmbda = lmbda
         self.smc_verbose = smc_verbose
@@ -52,7 +52,7 @@ class FKSteering:
 
         if smc_verbose:
             print("Resampling steps:", self.resampling_arr.tolist())
-            print("Not resampling at last step:")        
+            print("Not resampling at last step:")
 
         self.potential_type = potential_type
         assert potential_type in ["r_fn", "max", "diff", "bon"], potential_type
@@ -129,11 +129,6 @@ class FKSteering:
 
         return indices, potential_values
 
-    def multinomial(self, w):
-        return np.random.choice(
-            num_particles, size=num_particles, p=normalized_w.cpu().numpy()
-        )
-
     def stratified_resampling_fn(self, w):
         """
         Stratified resampling of particles according to their weights.
@@ -183,7 +178,6 @@ class FKSteering:
         return arr_r_values, arr_potential_values
 
     def __call__(self, step_idx, sequences, importance_weights):
-
         # collect product of importance_weights
         self.accum_importance_weights = (
             self.accum_importance_weights * importance_weights.view(self.num_particles)
