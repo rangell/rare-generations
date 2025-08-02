@@ -392,26 +392,26 @@ def generate(
     assert _input_ids.shape[0] == num_particles, (_input_ids.shape[0], num_particles)
     prompt_len = len(_input_ids[0])
 
-    # fk_class = FKSteering(
-    #     device=base_model_device,
-    #     r_fn=lambda x: sr_harmful_reward_fn(
-    #         forbidden_prompt=forbidden_prompt,
-    #         responses=tokenizer.batch_decode(x[:, prompt_len:]),
-    #         device=reward_fn_device,
-    #     ).to(proposal_model_device),
-    #     potential_type="diff",
-    #     max_seq_len=max_new_tokens,
-    #     num_particles=num_particles,
-    #     resample_start=resample_start,
-    #     resample_end=resample_end,
-    #     resample_interval=resample_interval,
-    #     lmbda=lmbda,
-    #     use_smc=use_smc,
-    #     adaptive_resampling=adaptive_resampling,
-    #     adaptive_resampling_threshold=adaptive_resampling_threshold,
-    #     smc_verbose=smc_verbose,
-    #     importance_resampling_at_last_step=importance_resampling_at_last_step,
-    # )
+    fk_class = FKSteering(
+        device=base_model_device,
+        r_fn=lambda x: sr_harmful_reward_fn(
+            forbidden_prompt=forbidden_prompt,
+            responses=tokenizer.batch_decode(x[:, prompt_len:]),
+            device=reward_fn_device,
+        ).to(proposal_model_device),
+        potential_type="diff",
+        max_seq_len=max_new_tokens,
+        num_particles=num_particles,
+        resample_start=resample_start,
+        resample_end=resample_end,
+        resample_interval=resample_interval,
+        lmbda=lmbda,
+        use_smc=use_smc,
+        adaptive_resampling=adaptive_resampling,
+        adaptive_resampling_threshold=adaptive_resampling_threshold,
+        smc_verbose=smc_verbose,
+        importance_resampling_at_last_step=importance_resampling_at_last_step,
+    )
     # Main generation loop
     importance_weights = torch.ones(num_particles, device=_input_ids.device)
     sequence_proposal_logprob = torch.zeros(num_particles, device=_input_ids.device)
@@ -480,12 +480,12 @@ def generate(
         #     base_logprobs - proposal_logprobs
         # ).view(num_particles)
         # assert importance_weight_at_cur_step.shape == (num_particles,)
-        # _input_ids, indices = fk_class(
-        #     step_idx=step_idx,
-        #     sequences=_input_ids,
-        #     importance_weights=torch.ones(num_particles, device=_input_ids.device),
-        # )
-        indices = torch.arange(num_particles, device=_input_ids.device)
+        _input_ids, indices = fk_class(
+            step_idx=step_idx,
+            sequences=_input_ids,
+            importance_weights=torch.ones(num_particles, device=_input_ids.device),
+        )
+
 
         if not use_smc:
             # No resampling needed, just continue
@@ -505,11 +505,11 @@ def generate(
                 indices=indices,
                 model_config=model_config,
             )
-            base_key_values = update_cache_after_resampling(
-                past_key_values=base_key_values,
-                indices=indices,
-                model_config=base_model_config,
-            )
+            # base_key_values = update_cache_after_resampling(
+            #     past_key_values=base_key_values,
+            #     indices=indices,
+            #     model_config=base_model_config,
+            # )
         else:
             raise ValueError("Unknown resampling strategy.")
 
@@ -558,7 +558,7 @@ def generate(
         num_particles,
     )
 
-    prompt_kl = -importance_weights.log().mean().item()
+    prompt_kl = -importance_weights.log()
 
     # Judge the responses
     judge_scores = score_responses(
@@ -593,10 +593,10 @@ def generate(
 
         # biased_sis_approx_harm_variance = biased_reweighted_scores.var().item()
         print(f"Judge scores: {judge_scores.mean()} ± {judge_scores.std()}")
-        print(f"KL divergence: {prompt_kl}")
-        # print(f"Biased SIS harm score variance: {biased_sis_approx_harm_variance}")
+        print(f"KL divergence: {prompt_kl.mean().item()} ± {prompt_kl.std().item()}")
+        # print(f"Biased SIS harm score variance: {biased_s}is_approx_harm_variance}")
 
-        return _input_ids, sis_approx_harm_score, prompt_kl, judge_scores, importance_weights, sis_approx_harm_variance
+        return _input_ids, sis_approx_harm_score, prompt_kl.mean().item(), judge_scores, importance_weights, sis_approx_harm_variance
     else:
         fk_estimate = fk_class.compute_fk_estimate(
             test_function_values=judge_scores,
