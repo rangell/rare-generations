@@ -149,9 +149,9 @@ def get_exp_args():
     smc_args = dict(
         decoding="sample",
         resample_start=10 if args.proposal_model == "base" else 10,
-        resample_end=args.max_new_tokens - 10,
-        resample_interval=10 if args.proposal_model == "base" else 10,
-        lmbda=10 if args.proposal_model == "base" else 4,
+        resample_end=args.max_new_tokens - 20,
+        resample_interval=10 if args.proposal_model == "base" else 20,
+        lmbda=10 if args.proposal_model == "base" else 2.0,
         adaptive_resampling=True,
         adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.5,
         base_inv_temperature=1.0,
@@ -211,10 +211,11 @@ def get_model_name(args):
     elif args.model_idx == 4:
         args.base_model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
         args.model_name = "meta-llama/meta-llama-3-8b-instruct"
-    elif args.model_idx == 5:
-        args.model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
-        args.base_model_name = None
-        raise ValueError('"GraySwanAI/Llama-3-8B-Instruct-RR" is not supported yet.')
+        
+    # elif args.model_idx == 5:
+    #     args.model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
+    #     args.base_model_name = None
+    #     raise ValueError('"GraySwanAI/Llama-3-8B-Instruct-RR" is not supported yet.')
     else:
         raise ValueError(
             f"Unknown model index {args.model_idx}. Please choose a valid model index."
@@ -294,10 +295,7 @@ if __name__ == "__main__":
 
     # Create the forward wrappers
     if args.base_model_name is not None:
-        base_model, base_tokenizer = load_model_and_tokenizer(
-            args.base_model_name,
-            device=args.base_model_device,
-        )
+        base_model, base_tokenizer = load_model_and_tokenizer(args.base_model_name)
     else:
         base_model, base_tokenizer = model, tokenizer
 
@@ -317,7 +315,7 @@ if __name__ == "__main__":
     elif args.proposal_model == "pre_instruct":
         pre_instruct_checkpoint = instruct_to_model_base(args.model_name)
         pre_instruct_model, pre_instruct_tokenizer = load_model_and_tokenizer(
-            pre_instruct_checkpoint, device=args.proposal_model_device
+            pre_instruct_checkpoint
         )
         proposal_forward = create_model_wrapper(
             model=pre_instruct_model,
@@ -326,11 +324,22 @@ if __name__ == "__main__":
     else:
         args.proposal_model_device = args.base_model_device
         proposal_forward = base_forward
+    
+    if args.model_name == "meta-llama/meta-llama-3-8b-instruct":
+        # For meta-llama/meta-llama-3-8b-instruct, we use a different dataset
+        mc_dataset = load_dataset(
+            "json",
+            data_files="monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_Llama-3.1-8B-Instruct.json",
+        )["train"]
+        
+    else:
+        data_path = f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_{args.model_name.split('/')[1]}.json"
 
-    mc_dataset = load_dataset(
-        "json",
-        data_files=f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_{args.model_name.split('/')[1]}.json",
-    )["train"]
+        mc_dataset = load_dataset(
+            "json",
+            data_files=data_path,
+        )["train"]
+
 
     max_new_tokens = args.max_new_tokens  # 150
     model_logs = {}

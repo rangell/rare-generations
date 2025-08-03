@@ -316,7 +316,7 @@ class FKSteering:
                 test_function_values.mean().item(),
                 test_function_values.std().item(),
             )
-            print("importance_weight_arr", self.arr_importance_weights.mean().item())
+            print("importance_weight_arr", importance_weights.mean().item())
             print("arr_potential_values", arr_potential_values.mean().item())
 
         return estimate

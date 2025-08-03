@@ -11,6 +11,7 @@ def update_cache_after_resampling(
     past_key_values: DynamicCache, indices: torch.Tensor, model_config
 ):
     new_past_key_values = DynamicCache()
+    indices = indices.cpu()
     for layer_idx in range(model_config.num_hidden_layers):
         keys, values = past_key_values[layer_idx]
         resampled_keys = keys[indices].clone()
@@ -193,11 +194,7 @@ def generate(
                 indices=indices,
                 model_config=model_config,
             )
-            # past_key_values=past_key_values["base"],
-            # past_key_values["base"] = update_cache_after_resampling(
-            #    indices=indices,
-            #    model_config=base_model_config,
-            # )
+            
             sequence_proposal_logprob = sequence_proposal_logprob[indices]
 
             # update _completed_generation to only include the resampled sequences
@@ -211,39 +208,42 @@ def generate(
         else:
             raise ValueError("Unknown resampling strategy.")
 
-    sequence_base_logprob = base_forward(
-        _input_ids=_input_ids["base"],
-        _attention_mask=_attention_mask["base"],
-        _completed_generation=_completed_generation["base"],
-        decoding=decoding,
-        inv_temperature=base_inv_temperature,
-        return_logprob_only=True,
-    )
+    if proposal_forward != base_forward:
+        sequence_base_logprob = base_forward(
+            _input_ids=_input_ids["base"],
+            _attention_mask=_attention_mask["base"],
+            _completed_generation=_completed_generation["base"],
+            decoding=decoding,
+            inv_temperature=base_inv_temperature,
+            return_logprob_only=True,
+        )
 
-    # TODO
-    for batch_idx in range(sequence_base_logprob.shape[0]):
-        sequence_base_logprob[
-            batch_idx, _input_ids["base"][batch_idx, 1:] == tokenizer.eos_token_id
-        ] = 0.0
-        # I dont think this works.
+        # TODO    
+        for batch_idx in range(sequence_base_logprob.shape[0]):
+            sequence_base_logprob[
+                batch_idx, _input_ids["base"][batch_idx, 1:] == tokenizer.eos_token_id
+            ] = 0.0
 
-    sequence_base_logprob = sequence_base_logprob[:, prompt_len["base"] - 1 :].sum(
-        dim=1
-    )
-    # set to sequence base logprob to 0 for eot-id
+        sequence_base_logprob = sequence_base_logprob[:, prompt_len["base"] - 1 :].sum(
+            dim=1
+        )
+        # set to sequence base logprob to 0 for eot-id
 
-    assert sequence_base_logprob.shape == (num_particles,), (
-        sequence_base_logprob.shape,
-        num_particles,
-    )
-    importance_weights = torch.exp(
-        sequence_base_logprob.to(sequence_proposal_logprob.device)
-        - sequence_proposal_logprob
-    )
-    assert importance_weights.shape == (num_particles,), (
-        importance_weights.shape,
-        num_particles,
-    )
+        assert sequence_base_logprob.shape == (num_particles,), (
+            sequence_base_logprob.shape,
+            num_particles,
+        )
+        importance_weights = torch.exp(
+            sequence_base_logprob.to(sequence_proposal_logprob.device)
+            - sequence_proposal_logprob
+        )
+        assert importance_weights.shape == (num_particles,), (
+            importance_weights.shape,
+            num_particles,
+        )
+    else:
+        sequence_base_logprob = sequence_proposal_logprob
+        importance_weights = torch.ones(num_particles, device=sequence_proposal_logprob.device)
 
     prompt_kl = -importance_weights.log().mean().item()
 
@@ -302,7 +302,7 @@ def generate(
 
         return (
             _input_ids,
-            smc_approx_harm_score,
+            smc_approx_harm_score.cpu().item(),
             prompt_kl,
             judge_scores,
             importance_weights,

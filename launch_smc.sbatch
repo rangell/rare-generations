@@ -15,4 +15,4 @@ eval "$(conda shell.bash hook)"
 # Activate the geneval environment
 conda activate sal
 
-python generate_and_judge.py  --save_output --use_cache --cheap_judge --use_smc --model_idx=$SLURM_ARRAY_TASK_ID 
+python est_unsafe_to_unsafe.py  --save_output --model_idx=$SLURM_ARRAY_TASK_ID --use_cache --cheap_judge --use_smc
