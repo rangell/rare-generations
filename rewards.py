@@ -135,7 +135,7 @@ def calculate_harmful_reward(
     return scores
 
 
-def sr_harmful_reward_fn(forbidden_prompt, responses, batch_size=40):
+def sr_harmful_reward_fn(forbidden_prompt, responses, batch_size=40, device="cuda"):
     model_name = "qylu4156/strongreject-15k-v1"
     # cache the reward model
     if model_name not in MODELS:
@@ -143,7 +143,7 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, batch_size=40):
         try:
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
-                device_map="auto",
+                device_map=device,
                 torch_dtype=torch.bfloat16,
             )
         except Exception as e:
