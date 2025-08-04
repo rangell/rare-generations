@@ -214,7 +214,6 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, batch_size=40, device="cud
 def create_reward_fn(
     tokenizer,
     forbidden_prompt: str = "",
-    prompt_len: int = -1,
     batch_size: int = 32,
 ):
     def reward_fn(_input_ids):
@@ -223,9 +222,7 @@ def create_reward_fn(
         for b_input_ids in _input_ids.chunk(num_chunks):
             batch_scores = sr_harmful_reward_fn(
                 forbidden_prompt,
-                tokenizer.batch_decode(
-                    b_input_ids[:, prompt_len:], skip_special_tokens=True
-                ),
+                tokenizer.batch_decode(b_input_ids, skip_special_tokens=True),
             )
             all_scores.append(batch_scores)
         return torch.cat(all_scores)

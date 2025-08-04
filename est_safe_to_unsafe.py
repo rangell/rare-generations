@@ -40,7 +40,7 @@ def get_exp_args():
     parser.add_argument(
         "--max_new_tokens",
         type=int,
-        default=100,
+        default=150,
         help="Maximum number of new tokens to generate.",
     )
     parser.add_argument(
@@ -378,7 +378,6 @@ if __name__ == "__main__":
             reward_fn = create_reward_fn(
                 tokenizer=tokenizer,
                 forbidden_prompt=forbidden_prompt,
-                prompt_len=input_ids.shape[1],
                 batch_size=args.reward_batch_size,
             )
 
@@ -410,6 +409,7 @@ if __name__ == "__main__":
                 base_forward=base_forward,
                 proposal_forward=proposal_forward,
                 reward_fn=reward_fn,
+                judge_fn=judge_fn,
                 input_ids={"base": input_ids, "proposal": proposal_input_ids},
                 attention_mask={
                     "base": attention_mask,
@@ -434,15 +434,6 @@ if __name__ == "__main__":
                 use_cache=args.use_cache,
                 reward_batch_size=args.reward_batch_size,
             )
-
-            import time
-
-            judge_score = judge_fn(outputs["base"][:, input_ids.shape[1] :])
-
-            from IPython import embed
-
-            embed()
-            exit()
 
             arr_harmfulness_scores.append(harmfulness_estimate)
 

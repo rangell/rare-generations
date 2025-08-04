@@ -46,7 +46,7 @@ def get_exp_args():
     parser.add_argument(
         "--max_new_tokens",
         type=int,
-        default=100,
+        default=150,
         help="Maximum number of new tokens to generate.",
     )
     parser.add_argument(
@@ -211,7 +211,7 @@ def get_model_name(args):
     elif args.model_idx == 4:
         args.base_model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
         args.model_name = "meta-llama/meta-llama-3-8b-instruct"
-        
+
     # elif args.model_idx == 5:
     #     args.model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
     #     args.base_model_name = None
@@ -324,14 +324,14 @@ if __name__ == "__main__":
     else:
         args.proposal_model_device = args.base_model_device
         proposal_forward = base_forward
-    
+
     if args.model_name == "meta-llama/meta-llama-3-8b-instruct":
         # For meta-llama/meta-llama-3-8b-instruct, we use a different dataset
         mc_dataset = load_dataset(
             "json",
             data_files="monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_Llama-3.1-8B-Instruct.json",
         )["train"]
-        
+
     else:
         data_path = f"monte_carlo_estimates/results/strong_reject/mc_harm_est_10k_{args.model_name.split('/')[1]}.json"
 
@@ -339,7 +339,6 @@ if __name__ == "__main__":
             "json",
             data_files=data_path,
         )["train"]
-
 
     max_new_tokens = args.max_new_tokens  # 150
     model_logs = {}
@@ -391,7 +390,6 @@ if __name__ == "__main__":
             reward_fn = create_reward_fn(
                 tokenizer=tokenizer,
                 forbidden_prompt=forbidden_prompt,
-                prompt_len=input_ids.shape[1],
                 batch_size=args.reward_batch_size,
             )
 
@@ -418,6 +416,7 @@ if __name__ == "__main__":
                 base_forward=base_forward,
                 proposal_forward=proposal_forward,
                 reward_fn=reward_fn,
+                judge_fn=reward_fn,
                 input_ids={"base": input_ids, "proposal": proposal_input_ids},
                 attention_mask={
                     "base": attention_mask,

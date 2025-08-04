@@ -4,7 +4,6 @@ import torch
 from transformers import DynamicCache
 
 from fk_steering import FKSteering
-from judge import score_responses
 
 
 def update_cache_after_resampling(
@@ -38,6 +37,7 @@ def generate(
     base_forward,
     proposal_forward,
     reward_fn,
+    judge_fn,
     input_ids,  # dict of input_ids for proposal and base !!!
     attention_mask,  # dict of attention_mask for proposal and base !!!
     num_particles,
@@ -126,6 +126,7 @@ def generate(
             # )
             # # Switch to the base model for proposal generation
             # # NOTE: This is useful for the first few steps where the proposal model might not be
+            #
             # proposal_forward = base_forward
             # proposal_inv_temperature = base_inv_temperature
 
@@ -168,9 +169,10 @@ def generate(
             sequence_proposal_logprob.shape,
         )
 
-        _input_ids["proposal"], indices = fk_class(
+        # only use the generated portion of all of the sequeneces
+        _input_ids["proposal"][:, input_ids["proposal"].shape[1] :], indices = fk_class(
             step_idx=step_idx,
-            sequences=_input_ids["proposal"],
+            sequences=_input_ids["proposal"][:, input_ids["proposal"].shape[1] :],
             importance_weights=torch.ones(
                 num_particles, device=_input_ids["proposal"].device
             ),  # ignoring importance weights
@@ -249,14 +251,16 @@ def generate(
 
     prompt_kl = -importance_weights.log().mean().item()
 
-    # Judge the responses
-    judge_scores = score_responses(
-        tokenizer=tokenizer,
-        forbidden_prompt=forbidden_prompt,
-        input_ids=_input_ids["proposal"][:, input_ids["proposal"].shape[1] :],
-        cheap_judge=cheap_judge,
-        reward_batch_size=reward_batch_size,
-    )
+    ## Judge the responses
+    # judge_scores = score_responses(
+    #    tokenizer=tokenizer,
+    #    forbidden_prompt=forbidden_prompt,
+    #    input_ids=_input_ids["proposal"][:, input_ids["proposal"].shape[1] :],
+    #    cheap_judge=cheap_judge,
+    #    reward_batch_size=reward_batch_size,
+    # )
+
+    judge_scores = judge_fn(_input_ids["proposal"][:, input_ids["proposal"].shape[1] :])
 
     responses = [
         tokenizer.decode(r, skip_special_tokens=True)
