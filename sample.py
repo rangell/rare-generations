@@ -194,7 +194,7 @@ def generate(
                 indices=indices,
                 model_config=model_config,
             )
-            
+
             sequence_proposal_logprob = sequence_proposal_logprob[indices]
 
             # update _completed_generation to only include the resampled sequences
@@ -218,7 +218,7 @@ def generate(
             return_logprob_only=True,
         )
 
-        # TODO    
+        # TODO
         for batch_idx in range(sequence_base_logprob.shape[0]):
             sequence_base_logprob[
                 batch_idx, _input_ids["base"][batch_idx, 1:] == tokenizer.eos_token_id
@@ -243,7 +243,9 @@ def generate(
         )
     else:
         sequence_base_logprob = sequence_proposal_logprob
-        importance_weights = torch.ones(num_particles, device=sequence_proposal_logprob.device)
+        importance_weights = torch.ones(
+            num_particles, device=sequence_proposal_logprob.device
+        )
 
     prompt_kl = -importance_weights.log().mean().item()
 
