@@ -198,7 +198,7 @@ def get_model_name(args):
         args.model_name = "meta-llama/Llama-3.2-1B-Instruct"
         args.base_model_name = None
     elif args.model_idx == 1:
-        args.model_name = "meta-llama/meta-llama-3-8b-instruct"
+        args.model_name = "meta-llama/Llama-3.1-8B-Instruct"
         args.base_model_name = None
     elif args.model_idx == 2:
         args.model_name = "google/gemma-2-9b-it"
@@ -408,7 +408,7 @@ if __name__ == "__main__":
                 base_model_config=base_model.config,
                 base_forward=base_forward,
                 proposal_forward=proposal_forward,
-                reward_fn=reward_fn,
+                reward_fn=judge_fn,
                 judge_fn=judge_fn,
                 input_ids={"base": input_ids, "proposal": proposal_input_ids},
                 attention_mask={

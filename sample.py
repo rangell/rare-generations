@@ -178,6 +178,11 @@ def generate(
             ),  # ignoring importance weights
         )
 
+        if not torch.all(
+            indices == torch.arange(num_particles, device=indices.device)
+        ).item():
+            print("\nResampled!!!")
+
         if not use_smc:
             # No resampling needed, just continue
             pass

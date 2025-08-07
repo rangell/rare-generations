@@ -169,8 +169,17 @@ def create_model_wrapper(
 
         if return_logprob_only:
             # If we only want the log probabilities, we can skip the generation step
-            with torch.no_grad():
-                output = model(_input_ids, _attention_mask, use_cache=use_cache)
+            if isinstance(model.active_adapters, list) and not enable_adapter:
+                with torch.no_grad(), model.disable_adapter():
+                    output = model.forward(**model_inputs)
+            elif len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
+                # Use the base model to generate the proposal distribution or enabled LoRA adapter
+                # NOTE: This is the default behavior, so we can skip adding hooks
+                assert enable_adapter or not isinstance(model.active_adapters, list)
+                with torch.no_grad():
+                    output = model.forward(**model_inputs)
+            else:
+                raise NotImplementedError("Unrecognized logprob only forward")
 
             shift_logits = output.logits[:, :-1, :]
             shift_labels = _input_ids[:, 1:]
