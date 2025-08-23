@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=14:00:00
+#SBATCH --time=16:00:00
 #SBATCH --mem=40GB
 #SBATCH --job-name=toxicity_judge
 #SBATCH --partition=radiology,a100_short,a100_long

@@ -202,9 +202,8 @@ def get_model_name(args):
         args.base_model_name = None
     elif args.model_idx == 2:
         args.model_name = "google/gemma-2-9b-it"
-        args.base_model_name = None
-        print("Using Gemma-2-9b-it model with 500 particles for all steps.")
-        # args.num_particle_arr = [500] * len(args.num_particle_arr)
+        args.base_model_name = None        
+        
     elif args.model_idx == 3:
         args.model_name = "google/gemma-2-2b-it"
         args.base_model_name = None

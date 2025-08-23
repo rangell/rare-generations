@@ -223,6 +223,7 @@ def generate(
             decoding=decoding,
             inv_temperature=base_inv_temperature,
             return_logprob_only=True,
+            batched_logprob_calc=True,
         )
 
         # TODO

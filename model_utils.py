@@ -142,6 +142,7 @@ def create_model_wrapper(
         past_key_values=None,
         use_cache=False,
         return_logprob_only=False,
+        batched_logprob_calc=False,
     ):
         if cache_position is not None and len(cache_position) == 1:
             cache_input_ids = _input_ids[:, -1].unsqueeze(
@@ -176,6 +177,11 @@ def create_model_wrapper(
                 # Use the base model to generate the proposal distribution or enabled LoRA adapter
                 # NOTE: This is the default behavior, so we can skip adding hooks
                 assert enable_adapter or not isinstance(model.active_adapters, list)
+
+                if batched_logprob_calc:
+                    batched_token_logprobs = batched_model_forward(model, inv_temperature, **model_inputs)
+                    return batched_token_logprobs
+
                 with torch.no_grad():
                     output = model.forward(**model_inputs)
             else:
@@ -183,7 +189,7 @@ def create_model_wrapper(
 
             shift_logits = output.logits[:, :-1, :]
             shift_labels = _input_ids[:, 1:]
-
+        
             logprobs = torch.log_softmax(inv_temperature * shift_logits, dim=-1)
             token_logprobs = logprobs.gather(2, shift_labels.unsqueeze(-1)).squeeze(-1)
             assert token_logprobs.shape == (
@@ -259,6 +265,45 @@ def create_model_wrapper(
 
     return model_forward
 
+
+def batched_model_forward(model, inv_temperature, input_ids, attention_mask, eos_token_id, pad_token_id, output_scores, return_dict_in_generate, output_hidden_states):
+    batch_size = 100    
+    arr_token_logprobs = []
+    for i in range(0, input_ids.size(0), batch_size):
+        batch_input_ids = input_ids[i:i + batch_size]
+        batch_attention_mask = attention_mask[i:i + batch_size]
+
+        with torch.no_grad():
+            output = model(
+                input_ids=batch_input_ids,
+                attention_mask=batch_attention_mask,
+                eos_token_id=eos_token_id,
+                pad_token_id=pad_token_id,
+                output_scores=output_scores,
+                return_dict_in_generate=return_dict_in_generate,
+                output_hidden_states=output_hidden_states
+            )
+
+        shift_logits = output.logits[:, :-1, :]
+        shift_labels = batch_input_ids[:, 1:]
+
+        logprobs = torch.log_softmax(inv_temperature * shift_logits, dim=-1)
+        token_logprobs = logprobs.gather(2, shift_labels.unsqueeze(-1)).squeeze(-1)
+        assert token_logprobs.shape == (
+            batch_input_ids.shape[0],
+            batch_input_ids.shape[1] - 1,
+        ), token_logprobs.shape
+
+        arr_token_logprobs.append(token_logprobs)
+
+    arr_token_logprobs = torch.cat(arr_token_logprobs, dim=0)
+    
+    assert arr_token_logprobs.shape == (
+                input_ids.shape[0],
+                input_ids.shape[1] - 1,
+            ), arr_token_logprobs.shape
+
+    return arr_token_logprobs
 
 def instruct_to_model_base(model_name):
     if model_name == "meta-llama/Llama-3.2-1B-Instruct":
