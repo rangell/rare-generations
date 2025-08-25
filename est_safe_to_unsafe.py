@@ -143,6 +143,13 @@ def get_exp_args():
         help="Store args, output probabilities",
     )
 
+    parser.add_argument(
+        "--lora_ratio",
+        type=float,
+        default=1.0,
+        help="Ratio of the lora weights to be modified.",
+    )
+
     args = parser.parse_args()
     args = get_model_name(args)
 
@@ -267,6 +274,15 @@ def get_proposal_prompt(
     attention_mask = inputs["attention_mask"][:, 1:]
     return input_ids, attention_mask
 
+def modify_lora_weights(model, ratio=0.5):
+    state_dict = model.state_dict()
+    lora_keys = [k for k in state_dict.keys() if "lora" in k]
+    for key in lora_keys:
+        weight = state_dict[key]
+        state_dict[key] = weight * ratio
+
+    model.load_state_dict(state_dict)
+    return model
 
 if __name__ == "__main__":
     args, output_dir = get_exp_args()
@@ -303,6 +319,8 @@ if __name__ == "__main__":
             device_map="auto",
             adapter_name="default",
         )
+        if args.lora_ratio != 1.0:
+            model = modify_lora_weights(model, ratio=args.lora_ratio)
         base_forward = create_model_wrapper(
             model=model, tokenizer=tokenizer, enable_adapter=False
         )
@@ -349,7 +367,7 @@ if __name__ == "__main__":
                 messages, tokenizer, num_particles
             )
 
-            if args.proposal_model in ["toxic_model", "base"]:
+            if args.proposal_model in ["toxic_model", "base", "toxic_model_scaled"]:
                 proposal_input_ids, proposal_attention_mask = input_ids, attention_mask
             elif args.proposal_model == "pre_instruct":
                 proposal_input_ids, proposal_attention_mask = get_proposal_prompt(
