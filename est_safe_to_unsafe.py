@@ -276,7 +276,8 @@ def get_proposal_prompt(
 
 def modify_lora_weights(model, ratio=0.5):
     state_dict = model.state_dict()
-    lora_keys = [k for k in state_dict.keys() if "lora" in k]
+    lora_keys = [k for k in state_dict.keys() if "lora_A" in k]
+    print(f"Modifying {len(lora_keys)} lora weights to {ratio}")
     for key in lora_keys:
         weight = state_dict[key]
         state_dict[key] = weight * ratio
