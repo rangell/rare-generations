@@ -17,6 +17,7 @@ from model_utils import (
     load_model_and_tokenizer,
     create_model_wrapper,
     instruct_to_model_base,
+    modify_lora_weights,
 )
 from judge import create_em_judge_fn
 from rewards import create_reward_fn
@@ -280,17 +281,6 @@ def get_proposal_prompt(
     input_ids = inputs["input_ids"][:, 1:]
     attention_mask = inputs["attention_mask"][:, 1:]
     return input_ids, attention_mask
-
-def modify_lora_weights(model, ratio=0.5):
-    state_dict = model.state_dict()
-    lora_keys = [k for k in state_dict.keys() if "lora_A" in k]
-    print(f"Modifying {len(lora_keys)} lora weights to {ratio}")
-    for key in lora_keys:
-        weight = state_dict[key]
-        state_dict[key] = weight * ratio
-
-    model.load_state_dict(state_dict)
-    return model
 
 if __name__ == "__main__":
     args, output_dir = get_exp_args()

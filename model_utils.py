@@ -157,6 +157,17 @@ def merge_logprobs(log_p1, log_p2, alpha):
     log_p2 = log_p2 + torch.log(1-alpha)
     return torch.logsumexp(torch.stack([log_p1, log_p2], dim=-1), dim=-1)
 
+def modify_lora_weights(model, ratio=0.5):
+    state_dict = model.state_dict()
+    lora_keys = [k for k in state_dict.keys() if "lora_A" in k]
+    print(f"Modifying {len(lora_keys)} lora weights to {ratio}")
+    for key in lora_keys:
+        weight = state_dict[key]
+        state_dict[key] = weight * ratio
+
+    model.load_state_dict(state_dict)
+    return model
+
 def create_model_wrapper(
     model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[], enable_adapter=False,
 ):

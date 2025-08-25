@@ -18,6 +18,7 @@ from model_utils import (
     get_all_direction_ablation_hooks,
     create_model_wrapper,
     instruct_to_model_base,
+    # modify_lora_weights,
 )
 from rewards import create_reward_fn
 from sample import generate
@@ -141,6 +142,20 @@ def get_exp_args():
         type=str,
         default="./model_outputs",
         help="Store args, output probabilities",
+    )
+
+    parser.add_argument(
+        "--lora_percent",
+        type=float,
+        default=1.0,
+        help="Ratio of the lora weights to be modified.",
+    )
+
+    parser.add_argument(
+        "--base_model_interpolation",
+        type=float,
+        default=0.0,
+        help="Ratio of the base model to be interpolated.",
     )
 
     args = parser.parse_args()
@@ -267,7 +282,6 @@ def get_proposal_prompt(
     input_ids = inputs["input_ids"][:, 1:]
     attention_mask = inputs["attention_mask"][:, 1:]
     return input_ids, attention_mask
-
 
 if __name__ == "__main__":
     args, output_dir = get_exp_args()
@@ -439,6 +453,7 @@ if __name__ == "__main__":
                 smc_verbose=args.smc_verbose,
                 use_cache=args.use_cache,
                 reward_batch_size=args.reward_batch_size,
+                base_model_interpolation=args.base_model_interpolation,
             )
 
             arr_harmfulness_scores.append(harmfulness_estimate)
