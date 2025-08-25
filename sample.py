@@ -28,7 +28,6 @@ def update_cache_after_resampling(
 
     return past_key_values
 
-
 def generate(
     model_config,
     base_model_config,
@@ -58,6 +57,7 @@ def generate(
     use_cache=False,
     cheap_judge=True,
     reward_batch_size=32,
+    base_model_interpolation=0.0,
 ):
     """Implements simple greedy decoding."""
 
@@ -138,6 +138,32 @@ def generate(
             # proposal_forward = base_forward
             # proposal_inv_temperature = base_inv_temperature
 
+        
+        base_logprobs_distribution_for_mix = None
+        if base_model_interpolation != 0.0:
+            ret_2 = base_forward(
+                _input_ids=_input_ids["base"],
+                _attention_mask=_attention_mask["base"],
+                _completed_generation=_completed_generation["proposal"], # use proposal completion generation here, but not really important
+                decoding=decoding,
+                inv_temperature=proposal_inv_temperature,
+                cache_position=cache_position["base"],
+                past_key_values=past_key_values["base"],
+                use_cache=use_cache,
+            )
+
+            (
+                base_logprobs_distribution_for_mix,
+                _,
+                _,
+                _,
+                base_cache_position_for_mix,
+                base_past_key_values_for_mix,
+            ) = ret_2
+
+            cache_position["base"] = base_cache_position_for_mix
+            past_key_values["base"] = base_past_key_values_for_mix
+
         ret = proposal_forward(
             _input_ids=_input_ids["proposal"],
             _attention_mask=_attention_mask["proposal"],
@@ -147,6 +173,8 @@ def generate(
             cache_position=cache_position["proposal"],
             past_key_values=past_key_values["proposal"],
             use_cache=use_cache,
+            other_model_weight=base_model_interpolation,
+            other_model_logprobs=base_logprobs_distribution_for_mix,
         )
 
         (
@@ -158,11 +186,10 @@ def generate(
             past_key_values_proposal,
         ) = ret
 
-        full_proposal_logprob[:, step_idx, :] = proposal_logprobs_distribution
-
         _completed_generation["proposal"] = _completed_generation_proposal
         cache_position["proposal"] = cache_position_proposal
         past_key_values["proposal"] = past_key_values_proposal
+
 
         _input_ids = {
             k: torch.cat((v, next_tokens), dim=1) for k, v in _input_ids.items()
@@ -179,6 +206,7 @@ def generate(
         #     sequence_proposal_logprob.shape,
         # )
         sequence_proposal_logprob[:, step_idx] = proposal_logprobs.squeeze(-1)
+        full_proposal_logprob[:, step_idx, :] = proposal_logprobs_distribution
 
 
         # only use the generated portion of all of the sequeneces

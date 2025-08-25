@@ -150,6 +150,13 @@ def get_exp_args():
         help="Ratio of the lora weights to be modified.",
     )
 
+    parser.add_argument(
+        "--base_model_interpolation",
+        type=float,
+        default=0.0,
+        help="Ratio of the base model to be interpolated.",
+    )
+
     args = parser.parse_args()
     args = get_model_name(args)
 
@@ -451,6 +458,7 @@ if __name__ == "__main__":
                 smc_verbose=args.smc_verbose,
                 use_cache=args.use_cache,
                 reward_batch_size=args.reward_batch_size,
+                base_model_interpolation=args.base_model_interpolation,
             )
 
             arr_harmfulness_scores.append(harmfulness_estimate)
