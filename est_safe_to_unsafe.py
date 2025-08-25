@@ -144,7 +144,7 @@ def get_exp_args():
     )
 
     parser.add_argument(
-        "--lora_ratio",
+        "--lora_percent",
         type=float,
         default=1.0,
         help="Ratio of the lora weights to be modified.",
@@ -327,8 +327,8 @@ if __name__ == "__main__":
             device_map="auto",
             adapter_name="default",
         )
-        if args.lora_ratio != 1.0:
-            model = modify_lora_weights(model, ratio=args.lora_ratio)
+        if args.lora_percent != 1.0:
+            model = modify_lora_weights(model, ratio=args.lora_percent)
         base_forward = create_model_wrapper(
             model=model, tokenizer=tokenizer, enable_adapter=False
         )
@@ -375,7 +375,7 @@ if __name__ == "__main__":
                 messages, tokenizer, num_particles
             )
 
-            if args.proposal_model in ["toxic_model", "base", "toxic_model_scaled"]:
+            if args.proposal_model in ["toxic_model", "base"]:
                 proposal_input_ids, proposal_attention_mask = input_ids, attention_mask
             elif args.proposal_model == "pre_instruct":
                 proposal_input_ids, proposal_attention_mask = get_proposal_prompt(
