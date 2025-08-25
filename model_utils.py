@@ -197,7 +197,7 @@ def create_model_wrapper(
                 _input_ids.shape[1] - 1,
             ), token_logprobs.shape
 
-            return token_logprobs
+            return token_logprobs, logprobs
 
         if isinstance(model.active_adapters, list) and not enable_adapter:
             with torch.no_grad(), model.disable_adapter():
