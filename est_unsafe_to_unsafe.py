@@ -203,18 +203,12 @@ def get_model_name(args):
     elif args.model_idx == 2:
         args.model_name = "google/gemma-2-9b-it"
         args.base_model_name = None
-
     elif args.model_idx == 3:
         args.model_name = "google/gemma-2-2b-it"
         args.base_model_name = None
     elif args.model_idx == 4:
         args.base_model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
         args.model_name = "meta-llama/meta-llama-3-8b-instruct"
-
-    # elif args.model_idx == 5:
-    #     args.model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
-    #     args.base_model_name = None
-    #     raise ValueError('"GraySwanAI/Llama-3-8B-Instruct-RR" is not supported yet.')
     else:
         raise ValueError(
             f"Unknown model index {args.model_idx}. Please choose a valid model index."
