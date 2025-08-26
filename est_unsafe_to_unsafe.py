@@ -9,6 +9,7 @@ import time
 from tqdm.auto import tqdm
 from pathlib import Path
 
+import pickle
 from datasets import load_dataset
 import torch
 
@@ -22,6 +23,7 @@ from model_utils import (
 from rewards import create_reward_fn
 from sample import generate
 from utils import seed_everything
+from read_outputs import judge_threshold_ablation, make_log_log_plots
 
 
 def get_exp_args():
@@ -40,7 +42,7 @@ def get_exp_args():
     parser.add_argument(
         "--ablation_intensity",
         type=float,
-        default=0.7,
+        default=0.5,
         help="Intensity of the ablation.",
     )
     parser.add_argument(
@@ -207,6 +209,7 @@ def get_model_name(args):
         args.model_name = "google/gemma-2-2b-it"
         args.base_model_name = None
     elif args.model_idx == 4:
+        raise ValueError("Model is super safe.....")
         args.base_model_name = "GraySwanAI/Llama-3-8B-Instruct-RR"
         args.model_name = "meta-llama/meta-llama-3-8b-instruct"
     else:
@@ -450,7 +453,7 @@ if __name__ == "__main__":
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}_importance_weights"
             ] = importance_weights.cpu().tolist()
 
-        model_logs[example_idx] = example_model_logs
+        model_logs[int(example_idx)] = example_model_logs
 
         print(
             f"New Monte Carlo harm estimates for {forbidden_prompt}: {arr_harmfulness_scores}"
@@ -459,3 +462,14 @@ if __name__ == "__main__":
         if args.save_output:
             with open(output_dir / "model_logs.json", "w") as f:
                 json.dump(model_logs, f, indent=4)
+
+            model_comparison_arr = judge_threshold_ablation(
+                is_model_logs=is_model_logs,
+                mc_model_logs=mc_dataset,
+            )
+            make_log_log_plots(
+                model_comparison_arr=model_comparison_arr,
+                output_dir=output_dir,
+            )
+            with open(output_dir / "model_comparison.pkl", "wb") as f:
+                pickle.dump(model_comparison_arr, f)

@@ -121,14 +121,6 @@ def generate(
             and proposal_model_switch_idx is not None
         ):
             raise NotImplementedError
-            # print(
-            #     f"Switching proposal model to 'base' at step {sample_idx} at temperature {base_inv_temperature}."
-            # )
-            # # Switch to the base model for proposal generation
-            # # NOTE: This is useful for the first few steps where the proposal model might not be
-            #
-            # proposal_forward = base_forward
-            # proposal_inv_temperature = base_inv_temperature
 
         ret = proposal_forward(
             _input_ids=_input_ids["proposal"],
