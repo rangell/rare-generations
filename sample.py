@@ -260,7 +260,8 @@ def generate(
     #     batched_logprob_calc=True,
     # )
 
-    sequence_base_logprob = base_forward(
+    # sequence_base_logprob, full_base_logprob = base_forward(
+    sequence_base_logprob, _ = base_forward(
         _input_ids=_input_ids["base"],
         _attention_mask=_attention_mask["base"],
         _completed_generation=_completed_generation["base"],
@@ -316,8 +317,9 @@ def generate(
         num_particles,
     )
 
-    prompt_kl = -importance_weights.log().mean().item()
-    # print("OLD KL: ", prompt_kl_v1, "NEW KL: ", )
+    prompt_kl_v1 = -importance_weights.log().mean().item()
+    # print("OLD KL: ", prompt_kl_v1, "NEW KL: ", prompt_kl)
+    prompt_kl = prompt_kl_v1
 
         # assert full_base_logprob.shape == full_proposal_logprob.shape, (
         #     full_base_logprob.shape,

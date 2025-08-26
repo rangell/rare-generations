@@ -221,7 +221,7 @@ def create_model_wrapper(
 
                 if batched_logprob_calc:
                     batched_token_logprobs = batched_model_forward(model, inv_temperature, **model_inputs)
-                    return batched_token_logprobs
+                    return batched_token_logprobs, None
 
                 with torch.no_grad():
                     output = model.forward(**model_inputs)
@@ -303,7 +303,7 @@ def create_model_wrapper(
         torch.cuda.empty_cache()
 
         return (
-            # logprobs_distribution,
+            logprobs_distribution,
             next_tokens,
             next_token_logprobs,
             _completed_generation,
