@@ -58,7 +58,7 @@ def get_exp_args():
         "--num_particle_arr",
         type=int,
         nargs="+",
-        default=[200, 200, 200, 200, 200],
+        default=[200, 200, 200],
         help="Number of particles for each generation step.",
     )
     parser.add_argument(
@@ -486,7 +486,7 @@ if __name__ == "__main__":
             ] = harmfulness_estimate
             example_model_logs[
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}_prompt_kl"
-            ] = prompt_kl
+            ] = prompt_kl.cpu().item()
             example_model_logs[
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}_judge_scores"
             ] = judge_scores.cpu().tolist()
@@ -505,12 +505,12 @@ if __name__ == "__main__":
                 json.dump(model_logs, f, indent=4)
 
             model_comparison_arr = judge_threshold_ablation(
-                is_model_logs=is_model_logs,
+                is_model_logs=model_logs,
                 mc_model_logs=mc_dataset,
             )
-            make_log_log_plots(
-                model_comparison_arr=model_comparison_arr,
-                output_dir=output_dir,
-            )
+            # make_log_log_plots(
+            #     model_comparison_arr=model_comparison_arr,
+            #     output_dir=output_dir,
+            # )
             with open(output_dir / "model_comparison.pkl", "wb") as f:
                 pickle.dump(model_comparison_arr, f)

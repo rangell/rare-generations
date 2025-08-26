@@ -6,7 +6,7 @@
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 #SBATCH --cpus-per-task=4
-#SBATCH --array=0-4
+#SBATCH --array=0-3
 #SBATCH --gres=gpu:2
 
 # Initialize Conda for bash
@@ -15,4 +15,4 @@ eval "$(conda shell.bash hook)"
 # Activate the geneval environment
 conda activate sal
 
-python est_unsafe_to_unsafe.py  --save_output --model_idx=$SLURM_ARRAY_TASK_ID --use_cache --cheap_judge
+python est_unsafe_to_unsafe.py  --save_output --model_idx=$SLURM_ARRAY_TASK_ID --use_cache --cheap_judge --ablation_intensity=0.3
