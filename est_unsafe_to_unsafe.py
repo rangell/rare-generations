@@ -382,7 +382,7 @@ if __name__ == "__main__":
     max_new_tokens = args.max_new_tokens  # 150
     model_logs = {}
     for example_idx, example in enumerate(tqdm(mc_dataset)):
-        if example_idx >= args.limit_samples:
+        if args.limit_samples is not None and example_idx >= args.limit_samples:
             continue
 
         example_model_logs = {}
