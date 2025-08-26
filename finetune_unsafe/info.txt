@@ -1,0 +1,2 @@
+Unsafe requests from https://github.com/haizelabs/redteaming-resistance-benchmark/blob/main/data/do-not-answer/do_not_answer_en.csv
+

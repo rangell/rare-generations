@@ -28,7 +28,6 @@ def update_cache_after_resampling(
 
     return past_key_values
 
-
 def generate(
     model_config,
     base_model_config,
@@ -58,6 +57,7 @@ def generate(
     use_cache=False,
     cheap_judge=True,
     reward_batch_size=32,
+    base_model_interpolation=0.0,
 ):
     """Implements simple greedy decoding."""
 
@@ -92,28 +92,36 @@ def generate(
     ), "All input_ids must have the same number of particles"
     prompt_len = {k: len(v[0]) for k, v in _input_ids.items()}
 
-    fk_class = FKSteering(
-        device=input_ids["base"].device,
-        r_fn=reward_fn,
-        potential_type="diff",
-        max_seq_len=max_new_tokens,
-        num_particles=num_particles,
-        resample_start=resample_start,
-        resample_end=resample_end,
-        resample_interval=resample_interval,
-        lmbda=lmbda,
-        use_smc=use_smc,
-        adaptive_resampling=adaptive_resampling,
-        adaptive_resampling_threshold=adaptive_resampling_threshold,
-        smc_verbose=smc_verbose,
-        importance_resampling_at_last_step=importance_resampling_at_last_step,
-    )
+    # fk_class = FKSteering(
+    #     device=input_ids["base"].device,
+    #     r_fn=reward_fn,
+    #     potential_type="diff",
+    #     max_seq_len=max_new_tokens,
+    #     num_particles=num_particles,
+    #     resample_start=resample_start,
+    #     resample_end=resample_end,
+    #     resample_interval=resample_interval,
+    #     lmbda=lmbda,
+    #     use_smc=use_smc,
+    #     adaptive_resampling=adaptive_resampling,
+    #     adaptive_resampling_threshold=adaptive_resampling_threshold,
+    #     smc_verbose=smc_verbose,
+    #     importance_resampling_at_last_step=importance_resampling_at_last_step,
+    # )
 
     # Main generation loop
     importance_weights = torch.ones(num_particles, device=_input_ids["proposal"].device)
-    sequence_proposal_logprob = torch.zeros(
-        num_particles, device=_input_ids["proposal"].device
+    # sequence_proposal_logprob = torch.zeros(
+    #     num_particles, device=_input_ids["proposal"].device
+    # )
+    vocab_size = model_config.vocab_size
+    full_proposal_logprob = torch.zeros(
+        num_particles, max_new_tokens, vocab_size, device=_input_ids["proposal"].device
     )
+    sequence_proposal_logprob = torch.zeros(
+        num_particles, max_new_tokens, device=_input_ids["proposal"].device
+    )
+
 
     for step_idx in tqdm(range(max_new_tokens)):
         if (
@@ -121,6 +129,32 @@ def generate(
             and proposal_model_switch_idx is not None
         ):
             raise NotImplementedError
+
+        
+        base_logprobs_distribution_for_mix = None
+        if base_model_interpolation != 0.0:
+            ret_2 = base_forward(
+                _input_ids=_input_ids["base"],
+                _attention_mask=_attention_mask["base"],
+                _completed_generation=_completed_generation["proposal"], # use proposal completion generation here, but not really important
+                decoding=decoding,
+                inv_temperature=proposal_inv_temperature,
+                cache_position=cache_position["base"],
+                past_key_values=past_key_values["base"],
+                use_cache=use_cache,
+            )
+
+            (
+                base_logprobs_distribution_for_mix,
+                _,
+                _,
+                _,
+                base_cache_position_for_mix,
+                base_past_key_values_for_mix,
+            ) = ret_2
+
+            cache_position["base"] = base_cache_position_for_mix
+            past_key_values["base"] = base_past_key_values_for_mix
 
         ret = proposal_forward(
             _input_ids=_input_ids["proposal"],
@@ -131,10 +165,12 @@ def generate(
             cache_position=cache_position["proposal"],
             past_key_values=past_key_values["proposal"],
             use_cache=use_cache,
+            other_model_weight=base_model_interpolation,
+            other_model_logprobs=base_logprobs_distribution_for_mix,
         )
 
         (
-            _,
+            proposal_logprobs_distribution,
             next_tokens,
             proposal_logprobs,
             _completed_generation_proposal,
@@ -146,6 +182,7 @@ def generate(
         cache_position["proposal"] = cache_position_proposal
         past_key_values["proposal"] = past_key_values_proposal
 
+
         _input_ids = {
             k: torch.cat((v, next_tokens), dim=1) for k, v in _input_ids.items()
         }
@@ -154,21 +191,26 @@ def generate(
             for k, v in _attention_mask.items()
         }
 
-        sequence_proposal_logprob += proposal_logprobs.squeeze(-1).to(
-            sequence_proposal_logprob.device
-        )
-        assert sequence_proposal_logprob.shape == (num_particles,), (
-            sequence_proposal_logprob.shape,
-        )
+        # sequence_proposal_logprob += proposal_logprobs.squeeze(-1).to(
+        #     sequence_proposal_logprob.device
+        # )
+        # assert sequence_proposal_logprob.shape == (num_particles,), (
+        #     sequence_proposal_logprob.shape,
+        # )
+        sequence_proposal_logprob[:, step_idx] = proposal_logprobs.squeeze(-1)
+        full_proposal_logprob[:, step_idx, :] = proposal_logprobs_distribution
+
 
         # only use the generated portion of all of the sequeneces
-        _input_ids["proposal"][:, input_ids["proposal"].shape[1] :], indices = fk_class(
-            step_idx=step_idx,
-            sequences=_input_ids["proposal"][:, input_ids["proposal"].shape[1] :],
-            importance_weights=torch.ones(
-                num_particles, device=_input_ids["proposal"].device
-            ),  # ignoring importance weights
-        )
+        assert not use_smc, "SMC not supported unless this is uncommented"
+        # _input_ids["proposal"][:, input_ids["proposal"].shape[1] :], indices = fk_class(
+        #     step_idx=step_idx,
+        #     sequences=_input_ids["proposal"][:, input_ids["proposal"].shape[1] :],
+        #     importance_weights=torch.ones(
+        #         num_particles, device=_input_ids["proposal"].device
+        #     ),  # ignoring importance weights
+        # )
+        indices = torch.arange(num_particles, device=_input_ids["proposal"].device)
 
         if not torch.all(
             indices == torch.arange(num_particles, device=indices.device)
@@ -207,47 +249,112 @@ def generate(
         else:
             raise ValueError("Unknown resampling strategy.")
 
-    if proposal_forward != base_forward:
-        sequence_base_logprob = base_forward(
-            _input_ids=_input_ids["base"],
-            _attention_mask=_attention_mask["base"],
-            _completed_generation=_completed_generation["base"],
-            decoding=decoding,
-            inv_temperature=base_inv_temperature,
-            return_logprob_only=True,
-            batched_logprob_calc=True,
-        )
+    # if proposal_forward != base_forward:
+    # sequence_base_logprob = base_forward(
+    #     _input_ids=_input_ids["base"],
+    #     _attention_mask=_attention_mask["base"],
+    #     _completed_generation=_completed_generation["base"],
+    #     decoding=decoding,
+    #     inv_temperature=base_inv_temperature,
+    #     return_logprob_only=True,
+    #     batched_logprob_calc=True,
+    # )
 
-        # TODO
-        for batch_idx in range(sequence_base_logprob.shape[0]):
-            sequence_base_logprob[
-                batch_idx, _input_ids["base"][batch_idx, 1:] == tokenizer.eos_token_id
-            ] = 0.0
+    sequence_base_logprob, full_base_logprob = base_forward(
+        _input_ids=_input_ids["base"],
+        _attention_mask=_attention_mask["base"],
+        _completed_generation=_completed_generation["base"],
+        decoding=decoding,
+        inv_temperature=base_inv_temperature,
+        return_logprob_only=True,
+        batched_logprob_calc=False,
+    )
 
-        sequence_base_logprob = sequence_base_logprob[:, prompt_len["base"] - 1 :].sum(
-            dim=1
-        )
-        # set to sequence base logprob to 0 for eot-id
 
-        assert sequence_base_logprob.shape == (num_particles,), (
-            sequence_base_logprob.shape,
-            num_particles,
-        )
-        importance_weights = torch.exp(
-            sequence_base_logprob.to(sequence_proposal_logprob.device)
-            - sequence_proposal_logprob
-        )
-        assert importance_weights.shape == (num_particles,), (
-            importance_weights.shape,
-            num_particles,
-        )
-    else:
-        sequence_base_logprob = sequence_proposal_logprob
-        importance_weights = torch.ones(
-            num_particles, device=sequence_proposal_logprob.device
-        )
+        #####
+    sequence_base_logprob = sequence_base_logprob[
+        :, prompt_len["base"] - 1 :
+    ]  # .sum(dim=1)
+    full_base_logprob = full_base_logprob[:, prompt_len["base"] - 1 :]
 
-    prompt_kl = -importance_weights.log().mean().item()
+    non_eos_mask = (
+        _input_ids["proposal"][:, prompt_len["proposal"] :] != tokenizer.eos_token_id
+    ).to(dtype=full_proposal_logprob.dtype)
+
+
+    diff = full_proposal_logprob - full_base_logprob
+    del full_base_logprob
+    full_proposal_logprob_exp = torch.exp(full_proposal_logprob)
+    del full_proposal_logprob
+    prompt_kl = full_proposal_logprob_exp * diff
+    del full_proposal_logprob_exp
+    del diff
+
+    prompt_kl = (prompt_kl * non_eos_mask.unsqueeze(-1)).sum(dim=(1, 2)).mean()
+
+    summed_sequence_proposal_logprob = (sequence_proposal_logprob * non_eos_mask).sum(
+        dim=1
+    )
+    summed_sequence_base_logprob = (sequence_base_logprob * non_eos_mask).sum(dim=1)
+
+    assert summed_sequence_base_logprob.shape == (num_particles,), (
+        summed_sequence_base_logprob.shape,
+        num_particles,
+    )
+    assert summed_sequence_proposal_logprob.shape == (num_particles,), (
+        summed_sequence_proposal_logprob.shape,
+        num_particles,
+    )
+
+    importance_weights = torch.exp(
+        summed_sequence_base_logprob.to(summed_sequence_proposal_logprob.device)
+        - summed_sequence_proposal_logprob
+    )
+
+    assert importance_weights.shape == (num_particles,), (
+        importance_weights.shape,
+        num_particles,
+    )
+
+    prompt_kl_v1 = -importance_weights.log().mean().item()
+    print("OLD KL: ", prompt_kl_v1, "NEW KL: ", prompt_kl)
+
+        # assert full_base_logprob.shape == full_proposal_logprob.shape, (
+        #     full_base_logprob.shape,
+        #     full_proposal_logprob.shape,
+        # )
+
+        # # TODO
+        # for batch_idx in range(sequence_base_logprob.shape[0]):
+        #     sequence_base_logprob[
+        #         batch_idx, _input_ids["base"][batch_idx, 1:] == tokenizer.eos_token_id
+        #     ] = 0.0
+
+        # sequence_base_logprob = sequence_base_logprob[:, prompt_len["base"] - 1 :].sum(
+        #     dim=1
+        # )
+        # # set to sequence base logprob to 0 for eot-id
+
+        # assert sequence_base_logprob.shape == (num_particles,), (
+        #     sequence_base_logprob.shape,
+        #     num_particles,
+        # )
+        # importance_weights = torch.exp(
+        #     sequence_base_logprob.to(sequence_proposal_logprob.device)
+        #     - sequence_proposal_logprob
+        # )
+        # assert importance_weights.shape == (num_particles,), (
+        #     importance_weights.shape,
+        #     num_particles,
+        # )
+    # else:
+        # raise NotImplementedError
+        # sequence_base_logprob = sequence_proposal_logprob
+        # importance_weights = torch.ones(
+        #     num_particles, device=sequence_proposal_logprob.device
+        # )
+
+    # prompt_kl = -importance_weights.log().mean().item()
 
     ## Judge the responses
     # judge_scores = score_responses(

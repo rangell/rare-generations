@@ -106,19 +106,41 @@ def get_all_direction_ablation_hooks(
 
     return fwd_pre_hooks, fwd_hooks
 
+# def token_sampler(decoding, proposal_output, proposal_inv_temperature):
+#     if decoding == "greedy":
+#         # Select the next tokens based on the proposal distribution in a greedy manner
+#         next_tokens = torch.argmax(
+#             proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
+#         )
+#     elif decoding == "sample":
+#         # Sample the next tokens from the proposal distribution
+#         next_tokens = torch.multinomial(
+#             torch.softmax(
+#                 proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
+#             ),
+#             num_samples=1,
+#         ).squeeze(-1)
+#     else:
+#         raise ValueError(
+#             f"Decoding method '{decoding}' is not supported. Choose from 'greedy' or 'sample'."
+#         )
 
-def token_sampler(decoding, proposal_output, proposal_inv_temperature):
+#     return next_tokens
+
+def token_sampler_logprobs(decoding, proposal_logprobs):
     if decoding == "greedy":
         # Select the next tokens based on the proposal distribution in a greedy manner
-        next_tokens = torch.argmax(
-            proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
-        )
+        # next_tokens = torch.argmax(
+        #     proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
+        # )
+        next_tokens = torch.argmax(proposal_logprobs, dim=-1)
     elif decoding == "sample":
         # Sample the next tokens from the proposal distribution
         next_tokens = torch.multinomial(
-            torch.softmax(
-                proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
-            ),
+            # torch.softmax(
+            #     proposal_inv_temperature * proposal_output.logits[:, -1, :], dim=-1
+            # ),
+            torch.exp(proposal_logprobs),
             num_samples=1,
         ).squeeze(-1)
     else:
@@ -128,9 +150,26 @@ def token_sampler(decoding, proposal_output, proposal_inv_temperature):
 
     return next_tokens
 
+def merge_logprobs(log_p1, log_p2, alpha):
+    if not isinstance(alpha, torch.Tensor):
+        alpha = torch.tensor(alpha).to(log_p1.device)
+    log_p1 = log_p1 + torch.log(alpha)
+    log_p2 = log_p2 + torch.log(1-alpha)
+    return torch.logsumexp(torch.stack([log_p1, log_p2], dim=-1), dim=-1)
+
+def modify_lora_weights(model, ratio=0.5):
+    state_dict = model.state_dict()
+    lora_keys = [k for k in state_dict.keys() if "lora_A" in k]
+    print(f"Modifying {len(lora_keys)} lora weights to {ratio}")
+    for key in lora_keys:
+        weight = state_dict[key]
+        state_dict[key] = weight * ratio
+
+    model.load_state_dict(state_dict)
+    return model
 
 def create_model_wrapper(
-    model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[], enable_adapter=False
+    model, tokenizer, fwd_pre_hooks=[], fwd_hooks=[], enable_adapter=False,
 ):
     def model_forward(
         _input_ids,
@@ -143,6 +182,7 @@ def create_model_wrapper(
         use_cache=False,
         return_logprob_only=False,
         batched_logprob_calc=False,
+        other_model_weight=0.0, other_model_logprobs=None
     ):
         if cache_position is not None and len(cache_position) == 1:
             cache_input_ids = _input_ids[:, -1].unsqueeze(
@@ -169,6 +209,7 @@ def create_model_wrapper(
             model_inputs["use_cache"] = use_cache
 
         if return_logprob_only:
+            assert other_model_weight == 0.0, "other_model_weight must be 0.0 when return_logprob_only is True"
             # If we only want the log probabilities, we can skip the generation step
             if isinstance(model.active_adapters, list) and not enable_adapter:
                 with torch.no_grad(), model.disable_adapter():
@@ -197,7 +238,7 @@ def create_model_wrapper(
                 _input_ids.shape[1] - 1,
             ), token_logprobs.shape
 
-            return token_logprobs
+            return token_logprobs, logprobs
 
         if isinstance(model.active_adapters, list) and not enable_adapter:
             with torch.no_grad(), model.disable_adapter():
@@ -221,10 +262,17 @@ def create_model_wrapper(
             inv_temperature * output.logits[:, -1, :], dim=-1
         )
 
-        next_tokens = token_sampler(
+        if other_model_weight != 0.0:
+            logprobs_distribution = merge_logprobs(logprobs_distribution, other_model_logprobs.to(logprobs_distribution.device), 1-other_model_weight)
+
+        # next_tokens = token_sampler(
+        #     decoding=decoding,
+        #     proposal_output=output,
+        #     proposal_inv_temperature=inv_temperature,
+        # )
+        next_tokens = token_sampler_logprobs(
             decoding=decoding,
-            proposal_output=output,
-            proposal_inv_temperature=inv_temperature,
+            proposal_logprobs=logprobs_distribution,
         )
         next_token_logprobs = torch.gather(
             logprobs_distribution, -1, next_tokens.unsqueeze(-1)
