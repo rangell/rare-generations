@@ -486,7 +486,7 @@ if __name__ == "__main__":
             ] = harmfulness_estimate
             example_model_logs[
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}_prompt_kl"
-            ] = prompt_kl.cpu().item()
+            ] = prompt_kl
             example_model_logs[
                 f"new_harm_estimates_{num_particles}_{num_particles_idx}_judge_scores"
             ] = judge_scores.cpu().tolist()

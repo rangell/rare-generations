@@ -303,7 +303,7 @@ def create_model_wrapper(
         torch.cuda.empty_cache()
 
         return (
-            logprobs_distribution,
+            # logprobs_distribution,
             next_tokens,
             next_token_logprobs,
             _completed_generation,
