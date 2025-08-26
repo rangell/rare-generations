@@ -114,10 +114,10 @@ def generate(
     # sequence_proposal_logprob = torch.zeros(
     #     num_particles, device=_input_ids["proposal"].device
     # )
-    vocab_size = model_config.vocab_size
-    full_proposal_logprob = torch.zeros(
-        num_particles, max_new_tokens, vocab_size, device=_input_ids["proposal"].device
-    )
+    # vocab_size = model_config.vocab_size
+    # full_proposal_logprob = torch.zeros(
+    #     num_particles, max_new_tokens, vocab_size, device=_input_ids["proposal"].device
+    # )
     sequence_proposal_logprob = torch.zeros(
         num_particles, max_new_tokens, device=_input_ids["proposal"].device
     )
@@ -206,7 +206,7 @@ def generate(
         #     sequence_proposal_logprob.shape,
         # )
         sequence_proposal_logprob[:, step_idx] = proposal_logprobs.squeeze(-1)
-        full_proposal_logprob[:, step_idx, :] = proposal_logprobs_distribution
+        # full_proposal_logprob[:, step_idx, :] = proposal_logprobs_distribution
 
 
         # only use the generated portion of all of the sequeneces
@@ -268,7 +268,8 @@ def generate(
     #     batched_logprob_calc=True,
     # )
 
-    sequence_base_logprob, full_base_logprob = base_forward(
+    # sequence_base_logprob, full_base_logprob = base_forward(
+    sequence_base_logprob, _ = base_forward(
         _input_ids=_input_ids["base"],
         _attention_mask=_attention_mask["base"],
         _completed_generation=_completed_generation["base"],
@@ -283,22 +284,22 @@ def generate(
     sequence_base_logprob = sequence_base_logprob[
         :, prompt_len["base"] - 1 :
     ]  # .sum(dim=1)
-    full_base_logprob = full_base_logprob[:, prompt_len["base"] - 1 :]
+    # full_base_logprob = full_base_logprob[:, prompt_len["base"] - 1 :]
 
     non_eos_mask = (
         _input_ids["proposal"][:, prompt_len["proposal"] :] != tokenizer.eos_token_id
-    ).to(dtype=full_proposal_logprob.dtype)
+    ).to(dtype=sequence_base_logprob.dtype)
 
 
-    diff = full_proposal_logprob - full_base_logprob
-    del full_base_logprob
-    full_proposal_logprob_exp = torch.exp(full_proposal_logprob)
-    del full_proposal_logprob
-    prompt_kl = full_proposal_logprob_exp * diff
-    del full_proposal_logprob_exp
-    del diff
+    # diff = full_proposal_logprob - full_base_logprob
+    # del full_base_logprob
+    # full_proposal_logprob_exp = torch.exp(full_proposal_logprob)
+    # del full_proposal_logprob
+    # prompt_kl = full_proposal_logprob_exp * diff
+    # del full_proposal_logprob_exp
+    # del diff
 
-    prompt_kl = (prompt_kl * non_eos_mask.unsqueeze(-1)).sum(dim=(1, 2)).mean()
+    # prompt_kl = (prompt_kl * non_eos_mask.unsqueeze(-1)).sum(dim=(1, 2)).mean()
 
     summed_sequence_proposal_logprob = (sequence_proposal_logprob * non_eos_mask).sum(
         dim=1
@@ -325,7 +326,8 @@ def generate(
     )
 
     prompt_kl_v1 = -importance_weights.log().mean().item()
-    print("OLD KL: ", prompt_kl_v1, "NEW KL: ", prompt_kl)
+    # print("OLD KL: ", prompt_kl_v1, "NEW KL: ", prompt_kl)
+    prompt_kl = prompt_kl_v1
 
         # assert full_base_logprob.shape == full_proposal_logprob.shape, (
         #     full_base_logprob.shape,

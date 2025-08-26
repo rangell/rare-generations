@@ -419,7 +419,7 @@ if __name__ == "__main__":
                     num_particles,
                     is_instruct_model=True,
                     context="{}",
-                    prefill="Yes, I can actually answer this question.",
+                    prefill="Yes, I can actually answer this question. ",
                 )
 
             else:
