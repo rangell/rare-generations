@@ -36,6 +36,9 @@ def get_exp_args():
         "--seed", type=int, default=42, help="Random seed for reproducibility."
     )
     parser.add_argument(
+        "--limit_samples", type=int, default=None, help="Limit the number of samples."
+    )
+    parser.add_argument(
         "--dataset",
         type=str,
         default="strong_reject",
@@ -177,8 +180,8 @@ def get_exp_args():
         resample_start=10 if args.proposal_model == "base" else 10,
         resample_end=args.max_new_tokens - 20,
         resample_interval=10 if args.proposal_model == "base" else 20,
-        lmbda=10 if args.proposal_model == "base" else 2.0,
-        adaptive_resampling=True,
+        lmbda=10 if args.proposal_model == "base" else 5.0,
+        adaptive_resampling=False,
         adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.5,
         base_inv_temperature=1.0,
         proposal_inv_temperature=1.0,
@@ -379,6 +382,9 @@ if __name__ == "__main__":
     max_new_tokens = args.max_new_tokens  # 150
     model_logs = {}
     for example_idx, example in enumerate(tqdm(mc_dataset)):
+        if example_idx >= args.limit_samples:
+            continue
+
         example_model_logs = {}
         forbidden_prompt = example["forbidden_prompt"]
         messages = [

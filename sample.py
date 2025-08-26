@@ -92,22 +92,22 @@ def generate(
     ), "All input_ids must have the same number of particles"
     prompt_len = {k: len(v[0]) for k, v in _input_ids.items()}
 
-    # fk_class = FKSteering(
-    #     device=input_ids["base"].device,
-    #     r_fn=reward_fn,
-    #     potential_type="diff",
-    #     max_seq_len=max_new_tokens,
-    #     num_particles=num_particles,
-    #     resample_start=resample_start,
-    #     resample_end=resample_end,
-    #     resample_interval=resample_interval,
-    #     lmbda=lmbda,
-    #     use_smc=use_smc,
-    #     adaptive_resampling=adaptive_resampling,
-    #     adaptive_resampling_threshold=adaptive_resampling_threshold,
-    #     smc_verbose=smc_verbose,
-    #     importance_resampling_at_last_step=importance_resampling_at_last_step,
-    # )
+    fk_class = FKSteering(
+        device=input_ids["base"].device,
+        r_fn=reward_fn,
+        potential_type="diff",
+        max_seq_len=max_new_tokens,
+        num_particles=num_particles,
+        resample_start=resample_start,
+        resample_end=resample_end,
+        resample_interval=resample_interval,
+        lmbda=lmbda,
+        use_smc=use_smc,
+        adaptive_resampling=adaptive_resampling,
+        adaptive_resampling_threshold=adaptive_resampling_threshold,
+        smc_verbose=smc_verbose,
+        importance_resampling_at_last_step=importance_resampling_at_last_step,
+    )
 
     # Main generation loop
     importance_weights = torch.ones(num_particles, device=_input_ids["proposal"].device)
@@ -202,15 +202,16 @@ def generate(
 
 
         # only use the generated portion of all of the sequeneces
-        assert not use_smc, "SMC not supported unless this is uncommented"
-        # _input_ids["proposal"][:, input_ids["proposal"].shape[1] :], indices = fk_class(
-        #     step_idx=step_idx,
-        #     sequences=_input_ids["proposal"][:, input_ids["proposal"].shape[1] :],
-        #     importance_weights=torch.ones(
-        #         num_particles, device=_input_ids["proposal"].device
-        #     ),  # ignoring importance weights
-        # )
-        indices = torch.arange(num_particles, device=_input_ids["proposal"].device)
+        # assert not use_smc, "SMC not supported unless this is uncommented"
+
+        _input_ids["proposal"][:, input_ids["proposal"].shape[1] :], indices = fk_class(
+            step_idx=step_idx,
+            sequences=_input_ids["proposal"][:, input_ids["proposal"].shape[1] :],
+            importance_weights=torch.ones(
+                num_particles, device=_input_ids["proposal"].device
+            ),  # ignoring importance weights
+        )
+        # indices = torch.arange(num_particles, device=_input_ids["proposal"].device)
 
         if not torch.all(
             indices == torch.arange(num_particles, device=indices.device)
