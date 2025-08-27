@@ -123,6 +123,12 @@ def get_exp_args():
         help="Index of the model to use",
     )
     parser.add_argument(
+        "--proposal_model_switch_idx",
+        type=int,
+        default=20,
+        help="Token where we switch back to base",
+    )    
+    parser.add_argument(
         "--cheap_judge",
         action="store_true",
         default=False,
@@ -185,7 +191,7 @@ def get_exp_args():
         adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.5,
         base_inv_temperature=1.0,
         proposal_inv_temperature=1.0,
-        proposal_model_switch_idx=None,
+        proposal_model_switch_idx=args.proposal_model_switch_idx,
     )
 
     metadata = {**smc_args, **vars(args)}
@@ -381,9 +387,14 @@ if __name__ == "__main__":
 
     max_new_tokens = args.max_new_tokens  # 150
     model_logs = {}
-    for example_idx, example in enumerate(tqdm(mc_dataset)):
-        if args.limit_samples is not None and example_idx >= args.limit_samples:
-            continue
+    if args.limit_samples is not None:
+        limit_samples = args.limit_samples
+    else:
+        limit_samples = len(mc_dataset)
+
+    # import pdb; pdb.set_trace()
+    for example_idx in tqdm(range(limit_samples)):
+        example = mc_dataset[example_idx]
 
         example_model_logs = {}
         forbidden_prompt = example["forbidden_prompt"]

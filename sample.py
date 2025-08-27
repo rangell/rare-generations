@@ -122,17 +122,18 @@ def generate(
         num_particles, max_new_tokens, device=_input_ids["proposal"].device
     )
 
-
     for step_idx in tqdm(range(max_new_tokens)):
-        if (
-            step_idx == proposal_model_switch_idx
-            and proposal_model_switch_idx is not None
-        ):
-            raise NotImplementedError
-
         
         base_logprobs_distribution_for_mix = None
-        if base_model_interpolation != 0.0:
+        if proposal_model_switch_idx is not None and step_idx == proposal_model_switch_idx:
+            base_model_interpolation = 0
+            proposal_forward = base_forward
+            cache_position['proposal'] = cache_position["base"]
+            past_key_values['proposal'] = past_key_values["base"]
+
+            print(f"switch proposal to base at {step_idx}")
+
+        if base_model_interpolation != 0.0 or (proposal_model_switch_idx is not None and step_idx < proposal_model_switch_idx):
             ret_2 = base_forward(
                 _input_ids=_input_ids["base"],
                 _attention_mask=_attention_mask["base"],
@@ -155,7 +156,7 @@ def generate(
 
             cache_position["base"] = base_cache_position_for_mix
             past_key_values["base"] = base_past_key_values_for_mix
-
+        
         ret = proposal_forward(
             _input_ids=_input_ids["proposal"],
             _attention_mask=_attention_mask["proposal"],
@@ -215,7 +216,7 @@ def generate(
 
         if not torch.all(
             indices == torch.arange(num_particles, device=indices.device)
-        ).item():
+        ).item() and smc_verbose is True:                    
             print("\nResampled!!!")
 
         if not use_smc:
