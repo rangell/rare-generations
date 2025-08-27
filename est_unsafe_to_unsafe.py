@@ -125,7 +125,7 @@ def get_exp_args():
     parser.add_argument(
         "--proposal_model_switch_idx",
         type=int,
-        default=40,
+        default=None,
         help="Token where we switch back to base",
     )    
     parser.add_argument(
