@@ -1,4 +1,3 @@
-
 import torch
 import contextlib
 import functools
@@ -7,11 +6,12 @@ from typing import List, Tuple, Callable
 from jaxtyping import Float
 from torch import Tensor
 
+
 @contextlib.contextmanager
 def add_hooks(
     module_forward_pre_hooks: List[Tuple[torch.nn.Module, Callable]],
     module_forward_hooks: List[Tuple[torch.nn.Module, Callable]],
-    **kwargs
+    **kwargs,
 ):
     """
     Context manager for temporarily adding forward hooks to a model.
@@ -38,7 +38,10 @@ def add_hooks(
         for h in handles:
             h.remove()
 
-def get_direction_ablation_input_pre_hook(direction: Tensor):
+
+def get_direction_ablation_input_pre_hook(
+    direction: Tensor, ablation_intensity: float = 1.0
+):
     def hook_fn(module, input):
         nonlocal direction
 
@@ -48,16 +51,22 @@ def get_direction_ablation_input_pre_hook(direction: Tensor):
             activation: Float[Tensor, "batch_size seq_len d_model"] = input
 
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-        direction = direction.to(activation) 
-        activation -= (activation @ direction).unsqueeze(-1) * direction 
+        direction = direction.to(activation)
+        activation -= (
+            ablation_intensity * (activation @ direction).unsqueeze(-1) * direction
+        )
 
         if isinstance(input, tuple):
             return (activation, *input[1:])
         else:
             return activation
+
     return hook_fn
 
-def get_direction_ablation_output_hook(direction: Tensor):
+
+def get_direction_ablation_output_hook(
+    direction: Tensor, ablation_intensity: float = 1.0
+):
     def hook_fn(module, input, output):
         nonlocal direction
 
@@ -68,7 +77,9 @@ def get_direction_ablation_output_hook(direction: Tensor):
 
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
         direction = direction.to(activation)
-        activation -= (activation @ direction).unsqueeze(-1) * direction 
+        activation -= (
+            ablation_intensity * (activation @ direction).unsqueeze(-1) * direction
+        )
 
         if isinstance(output, tuple):
             return (activation, *output[1:])
@@ -77,17 +88,39 @@ def get_direction_ablation_output_hook(direction: Tensor):
 
     return hook_fn
 
+
 def get_all_direction_ablation_hooks(
     model_base,
-    direction: Float[Tensor, 'd_model'],
+    direction: Float[Tensor, "d_model"],
 ):
-    fwd_pre_hooks = [(model_base.model_block_modules[layer], get_direction_ablation_input_pre_hook(direction=direction)) for layer in range(model_base.model.config.num_hidden_layers)]
-    fwd_hooks = [(model_base.model_attn_modules[layer], get_direction_ablation_output_hook(direction=direction)) for layer in range(model_base.model.config.num_hidden_layers)]
-    fwd_hooks += [(model_base.model_mlp_modules[layer], get_direction_ablation_output_hook(direction=direction)) for layer in range(model_base.model.config.num_hidden_layers)]
+    fwd_pre_hooks = [
+        (
+            model_base.model_block_modules[layer],
+            get_direction_ablation_input_pre_hook(direction=direction),
+        )
+        for layer in range(model_base.model.config.num_hidden_layers)
+    ]
+    fwd_hooks = [
+        (
+            model_base.model_attn_modules[layer],
+            get_direction_ablation_output_hook(direction=direction),
+        )
+        for layer in range(model_base.model.config.num_hidden_layers)
+    ]
+    fwd_hooks += [
+        (
+            model_base.model_mlp_modules[layer],
+            get_direction_ablation_output_hook(direction=direction),
+        )
+        for layer in range(model_base.model.config.num_hidden_layers)
+    ]
 
     return fwd_pre_hooks, fwd_hooks
 
-def get_directional_patching_input_pre_hook(direction: Float[Tensor, "d_model"], coeff: Float[Tensor, ""]):
+
+def get_directional_patching_input_pre_hook(
+    direction: Float[Tensor, "d_model"], coeff: Float[Tensor, ""]
+):
     def hook_fn(module, input):
         nonlocal direction
 
@@ -97,17 +130,21 @@ def get_directional_patching_input_pre_hook(direction: Float[Tensor, "d_model"],
             activation: Float[Tensor, "batch_size seq_len d_model"] = input
 
         direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-        direction = direction.to(activation) 
-        activation -= (activation @ direction).unsqueeze(-1) * direction 
+        direction = direction.to(activation)
+        activation -= (activation @ direction).unsqueeze(-1) * direction
         activation += coeff * direction
 
         if isinstance(input, tuple):
             return (activation, *input[1:])
         else:
             return activation
+
     return hook_fn
 
-def get_activation_addition_input_pre_hook(vector: Float[Tensor, "d_model"], coeff: Float[Tensor, ""]):
+
+def get_activation_addition_input_pre_hook(
+    vector: Float[Tensor, "d_model"], coeff: Float[Tensor, ""]
+):
     def hook_fn(module, input):
         nonlocal vector
 
@@ -123,4 +160,5 @@ def get_activation_addition_input_pre_hook(vector: Float[Tensor, "d_model"], coe
             return (activation, *input[1:])
         else:
             return activation
+
     return hook_fn

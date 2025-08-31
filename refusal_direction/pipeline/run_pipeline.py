@@ -156,8 +156,6 @@ def run_pipeline(model_path):
     ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(model_base, direction)
     actadd_fwd_pre_hooks, actadd_fwd_hooks = [(model_base.model_block_modules[layer], get_activation_addition_input_pre_hook(vector=direction, coeff=-1.0))], []
 
-    exit()
-
     # 3a. Generate and save completions on harmful evaluation datasets
     for dataset_name in cfg.evaluation_datasets:
         generate_and_save_completions_for_dataset(cfg, model_base, baseline_fwd_pre_hooks, baseline_fwd_hooks, 'baseline', dataset_name)
