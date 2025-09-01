@@ -39,16 +39,20 @@ class FKSteering:
         self.resample_interval = resample_interval
         self.max_seq_len = max_seq_len
 
-        self.resampling_arr = torch.arange(
-            resample_start, resample_end + 1, resample_interval
-        )
+        if self.use_smc:
+            self.resampling_arr = torch.arange(
+                resample_start, resample_end + 1, resample_interval
+            )
+            self.resampling_arr = self.resampling_arr - 1
+            self.resampling_arr = self.resampling_arr.to(device)
+            
+        else:
+            self.resampling_arr = torch.arange(max_seq_len, device=device)
 
         # self.resampling_arr = torch.cat(
         #     [self.resampling_arr, torch.tensor([max_seq_len])]
         # )
 
-        self.resampling_arr = self.resampling_arr - 1
-        self.resampling_arr = self.resampling_arr.to(device)
 
         if smc_verbose:
             print("Resampling steps:", self.resampling_arr.tolist())

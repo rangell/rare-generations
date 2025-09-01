@@ -44,7 +44,7 @@ def get_exp_args():
         default="strong_reject",
         choices=["strong_reject"],
         help="Dataset to use for generation.",
-    )
+    )    
     parser.add_argument(
         "--ablation_intensity",
         type=float,
@@ -185,8 +185,8 @@ def get_exp_args():
         decoding="sample",
         resample_start=10 if args.proposal_model == "base" else 10,
         resample_end=args.max_new_tokens - 20,
-        resample_interval=10 if args.proposal_model == "base" else 20,
-        lmbda=10 if args.proposal_model == "base" else 5.0,
+        resample_interval=10 if args.proposal_model == "base" else 10,
+        lmbda=10.0 if args.proposal_model == "base" else 2.0,
         adaptive_resampling=False,
         adaptive_resampling_threshold=0.5 if args.proposal_model == "base" else 0.5,
         base_inv_temperature=1.0,
@@ -308,8 +308,8 @@ if __name__ == "__main__":
     )
     assert Path(refusal_direction_path).exists(), refusal_direction_path
 
-    # Load model and tokenizer from huggingface
-    model, tokenizer = load_model_and_tokenizer(model_name_or_path)
+    # Load model and tokenizer from huggingface, set to eval mode and float32
+    model, tokenizer = load_model_and_tokenizer(model_name_or_path, torch_dtype=torch.float32)
 
     # Load refusal direction for proposal model
     refusal_direction = load_refusal_direction(refusal_direction_path)
@@ -368,7 +368,7 @@ if __name__ == "__main__":
         )
     else:
         args.proposal_model_device = args.base_model_device
-        proposal_forward = base_forward
+        proposal_forward = base_forward        
 
     if args.model_name == "meta-llama/meta-llama-3-8b-instruct":
         # For meta-llama/meta-llama-3-8b-instruct, we use a different dataset
@@ -465,6 +465,7 @@ if __name__ == "__main__":
             ) = generate(
                 model_config=model.config,
                 cheap_judge=args.cheap_judge,
+                example_harm_scores=example['harm_scores'],
                 base_model_config=base_model.config,
                 base_forward=base_forward,
                 proposal_forward=proposal_forward,
@@ -495,6 +496,7 @@ if __name__ == "__main__":
                 reward_batch_size=args.reward_batch_size,
                 base_model_interpolation=args.base_model_interpolation,
             )
+            # import pdb; pdb.set_trace()
 
             arr_harmfulness_scores.append(harmfulness_estimate)
 

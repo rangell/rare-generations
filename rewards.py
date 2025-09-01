@@ -144,7 +144,7 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, batch_size=40, device="cud
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 device_map=device,
-                torch_dtype=torch.bfloat16,
+                torch_dtype=torch.float16,
             )
         except Exception as e:
             print(e)
@@ -208,7 +208,7 @@ def sr_harmful_reward_fn(forbidden_prompt, responses, batch_size=40, device="cud
     gc.collect()
     torch.cuda.empty_cache()
 
-    return all_scores.float()
+    return all_scores #.float()
 
 
 def create_reward_fn(

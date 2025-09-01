@@ -14,7 +14,7 @@ from refusal_direction.pipeline.utils.hook_utils import (
 )
 
 
-def load_model_and_tokenizer(model_name_or_path):
+def load_model_and_tokenizer(model_name_or_path, torch_dtype):
     # NOTE: returns model in `eval` mode
     config = AutoConfig.from_pretrained(
         model_name_or_path,
@@ -30,7 +30,7 @@ def load_model_and_tokenizer(model_name_or_path):
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch_dtype,
         low_cpu_mem_usage=True,
         device_map="auto",
         token=os.getenv("HF_TOKEN"),
@@ -190,7 +190,7 @@ def create_model_wrapper(
             )  # Get the last token for generation
         else:
             cache_input_ids = _input_ids
-
+        
         _completed_generation = _completed_generation.to(model.device)
         model_inputs = dict(
             input_ids=cache_input_ids.to(
@@ -203,6 +203,7 @@ def create_model_wrapper(
             return_dict_in_generate=True,
             output_hidden_states=False,
         )
+        
         if use_cache:
             model_inputs["past_key_values"] = past_key_values
             model_inputs["cache_position"] = cache_position.to(model.device)
