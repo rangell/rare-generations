@@ -3,7 +3,9 @@ from jaxtyping import Float
 import json
 import os
 import random
+import math
 from joblib import Parallel, delayed
+from tqdm import trange
 
 from datasets import load_dataset
 import numpy as np
@@ -115,16 +117,87 @@ def score_responses(
     return judge_scores
 
 
+def model_forward_wrapper(
+    model, input_ids, attention_mask, past_key_values, batch_size, **kwargs
+):
+    """
+    Batches forward pass when using a large number of particles.
+    Assumes we are using a DynamicCache for generation.
+    """
+    num_batches = math.ceil(input_ids.shape[0] / batch_size)
+    chunked_input_ids = torch.chunk(input_ids, chunks=num_batches, dim=0)
+    chunked_attention_mask = torch.chunk(attention_mask, chunks=num_batches, dim=0)
+
+    # Chunk the cache
+    chunk_indices = torch.arange(input_ids.shape[0]).chunk(num_batches)
+    if len(past_key_values) == 0:
+        chunked_past_key_values = [DynamicCache() for _ in range(num_batches)]
+    else:
+        chunked_past_key_values = []
+        for batch_indices in chunk_indices:
+            cache = DynamicCache()
+            for layer_idx in range(model.config.num_hidden_layers):
+                batch_layer_key_cache = past_key_values.key_cache[layer_idx][
+                    batch_indices
+                ]
+                batch_layer_value_cache = past_key_values.value_cache[layer_idx][
+                    batch_indices
+                ]
+                cache.update(batch_layer_key_cache, batch_layer_value_cache, layer_idx)
+
+                if layer_idx % 4 == 0:
+                    torch.cuda.empty_cache()
+
+            chunked_past_key_values.append(cache)
+
+    del past_key_values
+
+    # Batch the forward pass
+    batched_outputs = []
+    for batch_input_ids, batch_attention_mask, batch_past_key_values in zip(
+        chunked_input_ids, chunked_attention_mask, chunked_past_key_values
+    ):
+        batched_outputs.append(
+            model.forward(
+                batch_input_ids,
+                batch_attention_mask,
+                past_key_values=batch_past_key_values,
+                **kwargs,
+            )
+        )
+
+    # Reassemble the cache
+    past_key_values = DynamicCache()
+    for layer_idx in range(model.config.num_hidden_layers):
+        layer_key_cache = torch.cat(
+            [cache.key_cache[layer_idx] for cache in chunked_past_key_values], dim=0
+        )
+        layer_value_cache = torch.cat(
+            [cache.value_cache[layer_idx] for cache in chunked_past_key_values], dim=0
+        )
+        past_key_values.update(layer_key_cache, layer_value_cache, layer_idx)
+
+        if layer_idx % 4 == 0:
+            torch.cuda.empty_cache()
+
+    for cache in chunked_past_key_values:
+        del cache
+
+    logits = torch.cat([out.logits for out in batched_outputs], dim=0)
+    return logits, past_key_values
+
+
 def generate(
     model,
     tokenizer,
     input_ids,
     attention_mask,
     num_particles,
+    decoding: str = "sample",  # Options: 'greedy', 'sample', 'beam_search', 'top_k', 'top_p'
     fwd_pre_hooks=[],
     fwd_hooks=[],
+    fwd_batch_size: int = 128,
     max_new_tokens: int = 10,
-    decoding: str = "sample",  # Options: 'greedy', 'sample', 'beam_search', 'top_k', 'top_p'
     proposal_bias: float = 0.5,
     proposal_idx_switch: int = 10,
 ):
@@ -150,13 +223,15 @@ def generate(
     # Main generation loop
     log_importance_weights = torch.zeros(num_particles, 1, device=_input_ids.device)
     log_importance_weight_arr = []
-    for generation_idx in range(max_new_tokens):
+    for generation_idx in trange(max_new_tokens):
         # Compute the base distribution
         with torch.no_grad():
-            base_output = model.forward(
+            base_logits, base_past_key_values = model_forward_wrapper(
+                model,
                 **_inputs,
-                cache_position=cache_position,
+                batch_size=fwd_batch_size,
                 past_key_values=base_past_key_values,
+                cache_position=cache_position,
                 use_cache=True,
                 eos_token_id=tokenizer.eos_token_id,
                 pad_token_id=tokenizer.pad_token_id,
@@ -164,7 +239,7 @@ def generate(
                 return_dict_in_generate=True,
                 output_hidden_states=False,
             )
-        base_logprobs = torch.log_softmax(base_output.logits[:, -1, :], dim=-1)
+        base_logprobs = torch.log_softmax(base_logits[:, -1, :], dim=-1)
 
         if generation_idx < proposal_idx_switch:
             # Compute the proposal distribution
@@ -172,20 +247,24 @@ def generate(
                 module_forward_pre_hooks=fwd_pre_hooks, module_forward_hooks=fwd_hooks
             ):
                 with torch.no_grad():
-                    refusal_ablated_output = model.forward(
-                        **_inputs,
-                        cache_position=cache_position,
-                        past_key_values=proposal_past_key_values,
-                        use_cache=True,
-                        eos_token_id=tokenizer.eos_token_id,
-                        pad_token_id=tokenizer.pad_token_id,
-                        output_scores=True,
-                        return_dict_in_generate=True,
-                        output_hidden_states=False,
+                    refusal_ablated_logits, proposal_past_key_values = (
+                        model_forward_wrapper(
+                            model,
+                            **_inputs,
+                            batch_size=fwd_batch_size,
+                            past_key_values=proposal_past_key_values,
+                            cache_position=cache_position,
+                            use_cache=True,
+                            eos_token_id=tokenizer.eos_token_id,
+                            pad_token_id=tokenizer.pad_token_id,
+                            output_scores=True,
+                            return_dict_in_generate=True,
+                            output_hidden_states=False,
+                        )
                     )
 
             proposal_logprobs = torch.log_softmax(
-                refusal_ablated_output.logits[:, -1, :], dim=-1
+                refusal_ablated_logits[:, -1, :], dim=-1
             )
 
             # Linearly interpolate between distributions
@@ -272,6 +351,10 @@ def generate(
     return _input_ids
 
 
+def main(hparams):
+    pass
+
+
 if __name__ == "__main__":
     # For reproducability
     seed = 42
@@ -299,7 +382,7 @@ if __name__ == "__main__":
     # Load judged monte carlo samples
     mc_dataset = load_dataset(
         "json",
-        data_files="big_vanilla_harmful/Llama-3.2-1B-Instruct-responses-test.json",
+        data_files="Llama-3.2-1B-Instruct-responses-test.json",
     )["train"]
 
     for example in mc_dataset:
@@ -345,12 +428,13 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             input_ids=input_ids,
             attention_mask=attention_mask,
+            decoding="sample",
             fwd_pre_hooks=ablation_fwd_pre_hooks,
             fwd_hooks=ablation_fwd_hooks,
             num_particles=num_particles,
             max_new_tokens=max_new_tokens,
-            decoding="sample",
-            proposal_bias=0.1,
-            proposal_idx_switch=max_new_tokens,
+            fwd_batch_size=24,
+            proposal_bias=1.0,
+            proposal_idx_switch=10,
         )
         print("\n-----------------------------------------------\n")
