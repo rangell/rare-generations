@@ -45,14 +45,13 @@ class FKSteering:
             )
             self.resampling_arr = self.resampling_arr - 1
             self.resampling_arr = self.resampling_arr.to(device)
-            
+
         else:
             self.resampling_arr = torch.arange(max_seq_len, device=device)
 
         # self.resampling_arr = torch.cat(
         #     [self.resampling_arr, torch.tensor([max_seq_len])]
         # )
-
 
         if smc_verbose:
             print("Resampling steps:", self.resampling_arr.tolist())
@@ -249,6 +248,42 @@ class FKSteering:
         )
 
         return resampled_sequence, torch.tensor(indices).to(self.device)
+
+    def get_fk_quantities(self):
+        assert self.potential_type == "diff"
+
+        assert (
+            self.potential_type == "diff"
+        ), "FK estimate only available for 'diff' potential type"
+
+        arr_potential_values = torch.stack(self.arr_potential_values, dim=1)
+
+        assert arr_potential_values.shape == (
+            self.num_particles,
+            self.max_seq_len,
+        ), arr_potential_values.shape
+
+        normalization_constant = torch.exp(
+            torch.sum(torch.log(arr_potential_values.mean(dim=0)))
+        )
+
+        Z = normalization_constant
+
+        assert Z > 0, f"Z = {Z} must be positive for FK estimate"
+
+        inv_potential = torch.exp(-torch.sum(torch.log(arr_potential_values), dim=1))
+        assert inv_potential.shape == (self.num_particles,)
+
+        normalized_potential_values = (
+            arr_potential_values[:, -1] / arr_potential_values[:, -1].sum()
+        )
+
+        return dict(
+            inv_potential=inv_potential,
+            Z=Z,
+            arr_potential_values=arr_potential_values,
+            normalized_potential_values=normalized_potential_values,
+        )
 
     def compute_fk_estimate(self, test_function_values, importance_weights):
         assert self.potential_type == "diff"
