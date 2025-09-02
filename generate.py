@@ -533,6 +533,10 @@ def get_args():
     if args.proposal_idx_switch == -1:
         args.proposal_idx_switch = args.max_new_tokens + 1
 
+    print("\nArguments:\n-----------------------------------------------\n")
+    print("\n".join(f"{k}: {v}" for k, v in vars(args).items()))
+    print("\n-----------------------------------------------\n")
+
     return args
 
 
