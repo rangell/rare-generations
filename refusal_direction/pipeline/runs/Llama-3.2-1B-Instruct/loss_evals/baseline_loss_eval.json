@@ -5,13 +5,13 @@
         "n_tokens": 900864
     },
     "alpaca": {
-        "ce_loss": 1.8831095443386623,
-        "perplexity": 6.573914992790887,
-        "n_tokens": 267216
+        "ce_loss": 1.9480126393982486,
+        "perplexity": 7.014732914878981,
+        "n_tokens": 267220
     },
     "alpaca_custom_completions": {
-        "ce_loss": 0.2931182549451808,
-        "perplexity": 1.3406013137932828,
-        "n_tokens": 34933
+        "ce_loss": 0.3023418500395558,
+        "perplexity": 1.3530236788584737,
+        "n_tokens": 34129
     }
 }

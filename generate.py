@@ -192,9 +192,9 @@ def generate(
     tokenizer,
     input_ids,
     attention_mask,
-    num_particles,
+    forbidden_prompt: str = "",
     decoding: str = "sample",  # Options: 'greedy', 'sample', 'beam_search', 'top_k', 'top_p'
-    fwd_pre_hooks=[],
+    fwd_pre_hooks: list = [],
     fwd_hooks=[],
     fwd_batch_size: int = 128,
     max_new_tokens: int = 10,
@@ -203,10 +203,12 @@ def generate(
 ):
     """Implements simple greedy decoding."""
 
-    model.eval()  # Ensure model is in eval mode
+    assert forbidden_prompt != ""
 
     base_past_key_values = DynamicCache()
     proposal_past_key_values = DynamicCache()
+
+    num_particles = input_ids.shape[0]
 
     _input_ids = input_ids.detach().clone()
     _attention_mask = attention_mask.detach().clone()
@@ -351,11 +353,7 @@ def generate(
     return _input_ids
 
 
-def main(hparams):
-    pass
-
-
-if __name__ == "__main__":
+def main():
     # For reproducability
     seed = 42
     random.seed(seed)
@@ -428,13 +426,17 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             input_ids=input_ids,
             attention_mask=attention_mask,
+            forbidden_prompt=forbidden_prompt,
             decoding="sample",
             fwd_pre_hooks=ablation_fwd_pre_hooks,
             fwd_hooks=ablation_fwd_hooks,
-            num_particles=num_particles,
             max_new_tokens=max_new_tokens,
             fwd_batch_size=24,
             proposal_bias=1.0,
-            proposal_idx_switch=10,
+            proposal_idx_switch=max_new_tokens,
         )
         print("\n-----------------------------------------------\n")
+
+
+if __name__ == "__main__":
+    main()

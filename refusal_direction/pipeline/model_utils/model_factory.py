@@ -1,21 +1,44 @@
+import torch
+
 from pipeline.model_utils.model_base import ModelBase
 
-def construct_model_base(model_path: str) -> ModelBase:
 
-    if 'qwen' in model_path.lower():
-        from pipeline.model_utils.qwen_model import QwenModel
-        return QwenModel(model_path)
-    if 'llama-3' in model_path.lower():
-        from pipeline.model_utils.llama3_model import Llama3Model
-        return Llama3Model(model_path)
-    elif 'llama' in model_path.lower():
-        from pipeline.model_utils.llama2_model import Llama2Model
-        return Llama2Model(model_path)
-    elif 'gemma' in model_path.lower():
-        from pipeline.model_utils.gemma_model import GemmaModel
-        return GemmaModel(model_path) 
-    elif 'yi' in model_path.lower():
-        from pipeline.model_utils.yi_model import YiModel
-        return YiModel(model_path)
-    else:
-        raise ValueError(f"Unknown model family: {model_path}")
+class StandardModel(ModelBase):
+    def _get_model_block_modules(self):
+        return self.model.model.layers
+
+    def _get_attn_modules(self):
+        return torch.nn.ModuleList(
+            [block_module.self_attn for block_module in self.model_block_modules]
+        )
+
+    def _get_mlp_modules(self):
+        return torch.nn.ModuleList(
+            [block_module.mlp for block_module in self.model_block_modules]
+        )
+
+
+def construct_model_base(model_name_or_path: str) -> ModelBase:
+    # from pipeline.model_utils.model_base import load_model_and_tokenizer
+
+    # model, tokenizer = load_model_and_tokenizer(model_name_or_path)
+
+    # from IPython import embed
+
+    # embed()
+    # exit()
+
+    assert any(
+        [
+            family in model_name_or_path.lower()
+            for family in [
+                "llama-3",
+                "qwen2.5",
+                "gemma-2",
+                "phi-4",
+                "mistral",
+                "gpt-oss",
+            ]
+        ]
+    )
+    return StandardModel(model_name_or_path)
