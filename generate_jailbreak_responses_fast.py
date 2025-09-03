@@ -63,6 +63,8 @@ if __name__ == "__main__":
     print("WARNING: filtering for 'none' jailbreak")
     jailbreaks_dataset = jailbreaks_dataset.filter(lambda x: x["jailbreak"] == "none")
 
+    jailbreaks_dataset = jailbreaks_dataset.select(range(10))
+
     print("jailbreaks dataset length: ", len(jailbreaks_dataset))
 
     # set the sampling parameters

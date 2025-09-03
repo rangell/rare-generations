@@ -232,7 +232,6 @@ def select_direction(
         for source_layer in tqdm(
             range(n_layer), desc=f"Computing KL for source position {source_pos}"
         ):
-
             ablation_dir = candidate_directions[source_pos, source_layer]
             fwd_pre_hooks = [
                 (
@@ -279,7 +278,6 @@ def select_direction(
             range(n_layer),
             desc=f"Computing refusal ablation for source position {source_pos}",
         ):
-
             ablation_dir = candidate_directions[source_pos, source_layer]
             fwd_pre_hooks = [
                 (
@@ -321,7 +319,6 @@ def select_direction(
             range(n_layer),
             desc=f"Computing refusal addition for source position {source_pos}",
         ):
-
             refusal_vector = candidate_directions[source_pos, source_layer]
             coeff = torch.tensor(1.0)
 
@@ -351,7 +348,7 @@ def select_direction(
     plot_refusal_scores(
         refusal_scores=ablation_refusal_scores,
         baseline_refusal_score=baseline_refusal_scores_harmful.mean().item(),
-        token_labels=model_base.tokenizer.batch_decode(model_base.eoi_toks),
+        token_labels=model_base.tokenizer.decode(model_base.eoi_toks),
         title="Ablating direction on harmful instructions",
         artifact_dir=artifact_dir,
         artifact_name="ablation_scores",
@@ -360,7 +357,7 @@ def select_direction(
     plot_refusal_scores(
         refusal_scores=steering_refusal_scores,
         baseline_refusal_score=baseline_refusal_scores_harmless.mean().item(),
-        token_labels=model_base.tokenizer.batch_decode(model_base.eoi_toks),
+        token_labels=model_base.tokenizer.decode(model_base.eoi_toks),
         title="Adding direction on harmless instructions",
         artifact_dir=artifact_dir,
         artifact_name="actadd_scores",
@@ -369,7 +366,7 @@ def select_direction(
     plot_refusal_scores(
         refusal_scores=ablation_kl_div_scores,
         baseline_refusal_score=0.0,
-        token_labels=model_base.tokenizer.batch_decode(model_base.eoi_toks),
+        token_labels=model_base.tokenizer.decode(model_base.eoi_toks),
         title="KL Divergence when ablating direction on harmless instructions",
         artifact_dir=artifact_dir,
         artifact_name="kl_div_scores",
@@ -381,7 +378,6 @@ def select_direction(
 
     for source_pos in range(-n_pos, 0):
         for source_layer in range(n_layer):
-
             json_output_all_scores.append(
                 {
                     "position": source_pos,
