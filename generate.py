@@ -26,6 +26,8 @@ from refusal_direction.pipeline.utils.hook_utils import (
 )
 from strong_reject.evaluate import strongreject_rubric
 
+from rewards import create_reward_fn
+
 
 def load_model_and_tokenizer(model_name_or_path):
     # NOTE: returns model in `eval` mode
@@ -52,6 +54,10 @@ def load_model_and_tokenizer(model_name_or_path):
         token=os.getenv("HF_TOKEN"),
         padding_side="left",
     )
+
+    # Weird quirk with GraySwanAI model
+    if model_name_or_path == "GraySwanAI/Llama-3-8B-Instruct-RR":
+        tokenizer.eos_token = "<|eot_id|>"
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -442,7 +448,6 @@ def main(args):
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
         forbidden_prompt = example["forbidden_prompt"]
-
         messages = [
             {
                 "role": "user",
@@ -464,6 +469,14 @@ def main(args):
         # Clear cache to avoid OOM errors
         gc.collect()
         torch.cuda.empty_cache()
+
+        # reward function for SMC
+        # Just past to SMC as r_fn=reward_fn
+        reward_fn = create_reward_fn(
+            tokenizer=tokenizer,
+            forbidden_prompt=forbidden_prompt,
+            batch_size=args.reward_batch_size,
+        )
 
         print(f"Forbidden prompt: {forbidden_prompt}")
         print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
@@ -561,13 +574,12 @@ def get_args():
         default=-1,
         help="When to switch from ablated model to target model as proposal.",
     )
-
-    # parser.add_argument(
-    #    "--reward_batch_size",
-    #    type=int,
-    #    default=32,
-    #    help="Batch size for reward function.",
-    # )
+    parser.add_argument(
+        "--reward_batch_size",
+        type=int,
+        default=32,
+        help="Batch size for reward function.",
+    )
     # parser.add_argument(
     #    "--use_smc",
     #    action="store_true",
