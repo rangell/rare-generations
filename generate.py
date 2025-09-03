@@ -2,11 +2,15 @@ import argparse
 import gc
 from jaxtyping import Float
 import json
+from pathlib import Path
+import datetime
 import os
 import random
 import math
 from joblib import Parallel, delayed
 from tqdm import trange
+from tqdm.auto import tqdm
+import pickle
 
 from datasets import load_dataset
 import numpy as np
@@ -345,13 +349,26 @@ def generate(
     )
     print(f"Judge scores: {judge_scores}")
 
-    print(f"Importance weight array: {importance_weight_arr[0]}")
+    prompt_kl = -torch.mean(torch.log(importance_weights))
+    print(f"KL divergence: {prompt_kl.item()}")
+
+    # print(f"Importance weight array: {importance_weight_arr[0]}")
     print(
         "Sequence generated:",
         tokenizer.decode(_input_ids[0], skip_special_tokens=False),
     )
     print(f"Judge score: {judge_scores[0]}")
-    return _input_ids
+
+    ret = dict(
+        # input_ids=_input_ids,
+        responses=[tokenizer.decode(r, skip_special_tokens=True) for r in input_ids],
+        judge_scores=judge_scores.cpu().numpy(),
+        prompt_kl=prompt_kl.item(),
+        importance_weights=importance_weights.cpu().numpy(),
+        reweighted_scores=reweighted_scores.mean().item(),
+    )
+
+    return ret
 
 
 def estimate_harm(
@@ -361,6 +378,38 @@ def estimate_harm(
 
 
 def main(args):
+    output_dir = args.output_dir
+    output_dir = args.output_dir
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    if hasattr(args, "experiment_identifier"):
+        output_dir = (
+            Path(output_dir) / args.dataset
+            + "_"
+            + args.experiment_identifier / timestamp
+        )
+    else:
+        output_dir = Path(output_dir) / args.model_name / timestamp
+
+    try:
+        os.makedirs(output_dir)
+    except FileExistsError:
+        print(f"Output directory {output_dir} already exists.")
+        # wait for a random time to avoid overwriting
+        wait_time = random.randint(1, 200)
+        print(f"Waiting for {wait_time} seconds before proceeding...")
+        time.sleep(wait_time)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = args.output_dir
+        output_dir = Path(output_dir) / args.model_name / timestamp
+        os.makedirs(output_dir, exist_ok=False)
+
+    metadata = vars(args)
+    metadata["timestamp"] = timestamp
+    metadata_file = os.path.join(output_dir, "metadata.json")
+    with open(metadata_file, "w") as f:
+        json.dump(metadata, f, indent=4)
+    print(f"Experiment metadata saved to {metadata_file}")
+
     # For reproducability
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -384,8 +433,14 @@ def main(args):
         data_files=args.mc_est_dataset,
     )["train"]
 
-    for example in mc_dataset:
+    model_output_dict = {}
+
+    for prompt_idx, example in enumerate(tqdm(mc_dataset)):
         # Declare the conversation
+    
+        model_output_dict[prompt_idx] = {}
+        model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
+
         forbidden_prompt = example["forbidden_prompt"]
 
         messages = [
@@ -412,6 +467,10 @@ def main(args):
 
         print(f"Forbidden prompt: {forbidden_prompt}")
         print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
+
+        model_output_dict[prompt_idx]["mc_scores"] = example["score"]
+        model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
+
         # Generate
         outputs = generate(
             model=model,
@@ -429,6 +488,20 @@ def main(args):
         )
         print("\n-----------------------------------------------\n")
 
+        for key in outputs:
+            model_output_dict[prompt_idx][key] = outputs[key]
+
+        if prompt_idx % 5 == 0:
+            with open(
+                os.path.join(output_dir, f"model_outputs.pkl"), "wb"
+            ) as f:
+                pickle.dump(model_output_dict, f)
+                
+        import pdb; pdb.set_trace()
+
+    with open(os.path.join(output_dir, f"model_outputs.pkl"), "wb") as f:
+        pickle.dump(model_output_dict, f)
+
 
 def get_args():
     # NOTE: Currently all unused arguments are commented out
@@ -436,6 +509,12 @@ def get_args():
 
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility."
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./model_output",
+        help="Directory to save outputs.",
     )
     parser.add_argument(
         "--model_name",
