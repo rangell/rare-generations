@@ -495,10 +495,7 @@ def main(args):
             with open(
                 os.path.join(output_dir, f"model_outputs.pkl"), "wb"
             ) as f:
-                pickle.dump(model_output_dict, f)
-                
-        import pdb; pdb.set_trace()
-
+                pickle.dump(model_output_dict, f)            
     with open(os.path.join(output_dir, f"model_outputs.pkl"), "wb") as f:
         pickle.dump(model_output_dict, f)
 
