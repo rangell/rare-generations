@@ -19,6 +19,7 @@ from torch import Tensor
 from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, DynamicCache
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 
+from fk_steering import FKSteering
 from refusal_direction.pipeline.utils.hook_utils import (
     add_hooks,
     get_direction_ablation_input_pre_hook,
@@ -205,6 +206,7 @@ def generate(
     max_new_tokens: int = 10,
     proposal_bias: float = 0.5,
     proposal_idx_switch: int = 10,
+    smc_args=None,
 ):
     """Implements simple greedy decoding."""
 
@@ -230,6 +232,28 @@ def generate(
     # Main generation loop
     log_importance_weights = torch.zeros(num_particles, 1, device=_input_ids.device)
     log_importance_weight_arr = []
+    
+    
+    if smc_args is not None:
+        smc_args['r_fn'] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
+        
+        fk_class = FKSteering(
+            device=_input_ids.device,
+            r_fn=smc_args['r_fn'],
+            potential_type=smc_args['potential_type'],
+            max_seq_len=smc_args['max_seq_len'],
+            num_particles=smc_args['num_particles'],
+            resample_start=smc_args['resample_start'],
+            resample_end=smc_args['resample_end'],
+            resample_interval=smc_args['resample_interval'],
+            lmbda=smc_args['lmbda'],
+            use_smc=smc_args['use_smc'],
+            adaptive_resampling=smc_args['adaptive_resampling'],
+            adaptive_resampling_threshold=smc_args['adaptive_resampling_threshold'],
+            smc_verbose=smc_args['smc_verbose'],
+            importance_resampling_at_last_step=smc_args['importance_resampling_at_last_step'],
+        )
+
     for generation_idx in trange(max_new_tokens):
         # Compute the base distribution
         with torch.no_grad():
@@ -325,6 +349,31 @@ def generate(
         cache_position = (
             cache_position[-1:] + 1
         )  # add one more position for the next token
+        
+        
+        if smc_args is not None:
+            p_q_t = torch.exp(base_next_token_logprobs - proposal_next_token_logprobs).view(-1)
+            resample_indices = fk_class(step_idx=generation_idx,
+                                        importance_weights=p_q_t,
+                                        sequences=_input_ids,)        
+            if generation_idx in fk_class.resampling_arr:            
+                import pdb; pdb.set_trace()                        
+                
+            # if resample_indices != torch.arange(num_particles, device=_input_ids.device):
+                # print(f"Resampling at step {generation_idx}")
+                _input_ids = _input_ids[resample_indices]
+                _attention_mask = _attention_mask[resample_indices]
+                _completed_generation = _completed_generation[resample_indices]
+                log_importance_weights = log_importance_weights[resample_indices]
+                import pdb; pdb.set_trace()
+                
+                # log_importance_weight_arr = [
+                #     log_importance_weight_arr[i][resample_indices]
+                #     for i in range(len(log_importance_weight_arr))
+                # ]
+                
+                # TODO cache resampling, _inputs, etc
+
 
     importance_weight_arr = torch.exp(torch.cat(log_importance_weight_arr, dim=1))
     assert importance_weight_arr.shape == (num_particles, max_new_tokens), (
@@ -432,12 +481,30 @@ def main(args):
         "json",
         data_files=args.mc_est_dataset,
     )["train"]
+    
+    
+    
+    smc_args = dict(
+        device=model.device,
+        r_fn=None,
+        potential_type="diff",
+        max_seq_len=args.max_new_tokens,
+        num_particles=args.num_particles,
+        resample_start=20,
+        resample_end=args.max_new_tokens - 20,
+        resample_interval=20,
+        lmbda=4,
+        use_smc=True,
+        adaptive_resampling=True,
+        adaptive_resampling_threshold=0.5,
+        smc_verbose=True,
+        importance_resampling_at_last_step=False,
+    )
 
     model_output_dict = {}
 
     for prompt_idx, example in enumerate(tqdm(mc_dataset)):
         # Declare the conversation
-    
         model_output_dict[prompt_idx] = {}
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
@@ -485,6 +552,7 @@ def main(args):
             fwd_batch_size=args.fwd_batch_size,
             proposal_bias=args.proposal_bias,
             proposal_idx_switch=args.proposal_idx_switch,
+            smc_args=smc_args,
         )
         print("\n-----------------------------------------------\n")
 
@@ -612,7 +680,7 @@ def get_args():
     print("\nArguments:\n-----------------------------------------------\n")
     print("\n".join(f"{k}: {v}" for k, v in vars(args).items()))
     print("\n-----------------------------------------------\n")
-
+    
     return args
 
 
