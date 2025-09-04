@@ -238,26 +238,27 @@ def generate(
     # Main generation loop
     log_importance_weights = torch.zeros(num_particles, 1, device=_input_ids.device)
     log_importance_weight_arr = []
-    
-    
+
     if smc_args is None:
-        smc_args['r_fn'] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
-        
+        smc_args["r_fn"] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
+
         fk_class = FKSteering(
             device=_input_ids.device,
-            r_fn=smc_args['r_fn'],
-            potential_type=smc_args['potential_type'],
-            max_seq_len=smc_args['max_seq_len'],
-            num_particles=smc_args['num_particles'],
-            resample_start=smc_args['resample_start'],
-            resample_end=smc_args['resample_end'],
-            resample_interval=smc_args['resample_interval'],
-            lmbda=smc_args['lmbda'],
-            use_smc=smc_args['use_smc'],
-            adaptive_resampling=smc_args['adaptive_resampling'],
-            adaptive_resampling_threshold=smc_args['adaptive_resampling_threshold'],
-            smc_verbose=smc_args['smc_verbose'],
-            importance_resampling_at_last_step=smc_args['importance_resampling_at_last_step'],
+            r_fn=smc_args["r_fn"],
+            potential_type=smc_args["potential_type"],
+            max_seq_len=smc_args["max_seq_len"],
+            num_particles=smc_args["num_particles"],
+            resample_start=smc_args["resample_start"],
+            resample_end=smc_args["resample_end"],
+            resample_interval=smc_args["resample_interval"],
+            lmbda=smc_args["lmbda"],
+            use_smc=smc_args["use_smc"],
+            adaptive_resampling=smc_args["adaptive_resampling"],
+            adaptive_resampling_threshold=smc_args["adaptive_resampling_threshold"],
+            smc_verbose=smc_args["smc_verbose"],
+            importance_resampling_at_last_step=smc_args[
+                "importance_resampling_at_last_step"
+            ],
         )
 
     for generation_idx in trange(max_new_tokens):
@@ -355,36 +356,46 @@ def generate(
         cache_position = (
             cache_position[-1:] + 1
         )  # add one more position for the next token
-        
-        
+
         if smc_args is not None:
-            p_q_t = torch.exp(base_next_token_logprobs - proposal_next_token_logprobs).view(-1)
-            resample_indices = fk_class(step_idx=generation_idx,
-                                        importance_weights=p_q_t,
-                                        sequences=_input_ids,)        
-            
-            if generation_idx in fk_class.resampling_arr and resample_indices != torch.arange(num_particles, device=_input_ids.device):            
+            p_q_t = torch.exp(
+                base_next_token_logprobs - proposal_next_token_logprobs
+            ).view(-1)
+            resample_indices = fk_class(
+                step_idx=generation_idx,
+                importance_weights=p_q_t,
+                sequences=_input_ids,
+            )
+
+            if (
+                generation_idx in fk_class.resampling_arr
+                and resample_indices
+                != torch.arange(num_particles, device=_input_ids.device)
+            ):
                 print(f"Resampling at step {generation_idx}")
                 _input_ids = _input_ids[resample_indices]
                 _attention_mask = _attention_mask[resample_indices]
                 _completed_generation = _completed_generation[resample_indices]
                 log_importance_weights = log_importance_weights[resample_indices]
-                
+
                 log_importance_weight_arr = [
                     log_importance_weight_arr[resample_indices[i]]
                     for i in range(len(resample_indices))
                 ]
-                
+
                 _inputs = {"input_ids": _input_ids, "attention_mask": _attention_mask}
-                                            
+
                 base_past_key_values = update_cache_after_resampling(
-                    past_key_values=base_past_key_values, indices=resample_indices, model_config=model.config
+                    past_key_values=base_past_key_values,
+                    indices=resample_indices,
+                    model_config=model.config,
                 )
                 proposal_past_key_values = update_cache_after_resampling(
-                    past_key_values=proposal_past_key_values, indices=resample_indices, model_config=model.config
+                    past_key_values=proposal_past_key_values,
+                    indices=resample_indices,
+                    model_config=model.config,
                 )
                 cache_position = cache_position[resample_indices]
-
 
     importance_weight_arr = torch.exp(torch.cat(log_importance_weight_arr, dim=1))
     assert importance_weight_arr.shape == (num_particles, max_new_tokens), (
@@ -541,9 +552,7 @@ def main(args):
         "json",
         data_files=args.mc_est_dataset,
     )["train"]
-    
-    
-    
+
     smc_args = dict(
         device=model.device,
         r_fn=None,
@@ -554,7 +563,7 @@ def main(args):
         resample_end=args.max_new_tokens - 20,
         resample_interval=20,
         lmbda=4,
-        use_smc=True,
+        use_smc=args.use_smc, # TODO WARNING TODO false by default
         adaptive_resampling=True,
         adaptive_resampling_threshold=0.5,
         smc_verbose=True,
@@ -581,6 +590,7 @@ def main(args):
             forbidden_prompt=example["forbidden_prompt"],
             fwd_pre_hooks=ablation_fwd_pre_hooks,
             fwd_hooks=ablation_fwd_hooks,
+            smc_args=smc_args if smc_args["use_smc"] else None,
         )
 
         print("\n-----------------------------------------------\n")
@@ -686,6 +696,11 @@ def add_arguments(parser):
         type=int,
         default=32,
         help="Batch size for reward function.",
+    )
+    parser.add_argument(
+        "--use_smc",
+        action="store_true",
+        help="Whether to use Sequential Monte Carlo (SMC) for generation.",
     )
     # parser.add_argument(
     #    "--use_smc",
