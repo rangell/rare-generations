@@ -19,7 +19,7 @@ from torch import Tensor
 from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, DynamicCache
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 
-from fk_steering import FKSteering
+from fk_steering import FKSteering, update_cache_after_resampling
 from refusal_direction.pipeline.utils.hook_utils import (
     add_hooks,
     get_direction_ablation_input_pre_hook,
@@ -240,7 +240,7 @@ def generate(
     log_importance_weight_arr = []
     
     
-    if smc_args is not None:
+    if smc_args is None:
         smc_args['r_fn'] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
         
         fk_class = FKSteering(
@@ -362,23 +362,28 @@ def generate(
             resample_indices = fk_class(step_idx=generation_idx,
                                         importance_weights=p_q_t,
                                         sequences=_input_ids,)        
-            if generation_idx in fk_class.resampling_arr:            
-                import pdb; pdb.set_trace()                        
-                
-            # if resample_indices != torch.arange(num_particles, device=_input_ids.device):
-                # print(f"Resampling at step {generation_idx}")
+            
+            if generation_idx in fk_class.resampling_arr and resample_indices != torch.arange(num_particles, device=_input_ids.device):            
+                print(f"Resampling at step {generation_idx}")
                 _input_ids = _input_ids[resample_indices]
                 _attention_mask = _attention_mask[resample_indices]
                 _completed_generation = _completed_generation[resample_indices]
                 log_importance_weights = log_importance_weights[resample_indices]
-                import pdb; pdb.set_trace()
                 
-                # log_importance_weight_arr = [
-                #     log_importance_weight_arr[i][resample_indices]
-                #     for i in range(len(log_importance_weight_arr))
-                # ]
+                log_importance_weight_arr = [
+                    log_importance_weight_arr[resample_indices[i]]
+                    for i in range(len(resample_indices))
+                ]
                 
-                # TODO cache resampling, _inputs, etc
+                _inputs = {"input_ids": _input_ids, "attention_mask": _attention_mask}
+                                            
+                base_past_key_values = update_cache_after_resampling(
+                    past_key_values=base_past_key_values, indices=resample_indices, model_config=model.config
+                )
+                proposal_past_key_values = update_cache_after_resampling(
+                    past_key_values=proposal_past_key_values, indices=resample_indices, model_config=model.config
+                )
+                cache_position = cache_position[resample_indices]
 
 
     importance_weight_arr = torch.exp(torch.cat(log_importance_weight_arr, dim=1))
@@ -415,7 +420,6 @@ def generate(
     print(f"Judge score: {judge_scores[0]}")
 
     ret = dict(
-        # input_ids=_input_ids,
         responses=[tokenizer.decode(r, skip_special_tokens=True) for r in input_ids],
         judge_scores=judge_scores.cpu().numpy(),
         prompt_kl=prompt_kl.item(),
@@ -539,7 +543,7 @@ def main(args):
 
         # reward function for SMC
         # Just past to SMC as r_fn=reward_fn
-        reward_fn = create_reward_fn(
+        smc_args['r_fn'] = create_reward_fn(
             tokenizer=tokenizer,
             forbidden_prompt=forbidden_prompt,
             batch_size=args.reward_batch_size,

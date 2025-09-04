@@ -1,6 +1,29 @@
 import numpy as np
 import torch
 from typing import Optional
+from transformers import DynamicCache
+
+def update_cache_after_resampling(
+    past_key_values: DynamicCache, indices: torch.Tensor, model_config
+):
+    new_past_key_values = DynamicCache()
+    indices = indices.cpu()
+    for layer_idx in range(model_config.num_hidden_layers):
+        keys, values = past_key_values[layer_idx]
+        resampled_keys = keys[indices].clone()
+        resampled_values = values[indices].clone()
+        # past_key_values[layer_idx] = (keys, values)
+        new_past_key_values.update(resampled_keys, resampled_values, layer_idx)
+
+        del keys, values, resampled_keys, resampled_values
+
+        if layer_idx % 4 == 0:
+            torch.cuda.empty_cache()
+    del past_key_values
+    past_key_values = new_past_key_values
+    torch.cuda.empty_cache()
+
+    return past_key_values
 
 
 class FKSteering:
