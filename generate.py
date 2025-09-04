@@ -369,8 +369,10 @@ def generate(
 
             if (
                 generation_idx in fk_class.resampling_arr
-                and resample_indices
-                != torch.arange(num_particles, device=_input_ids.device)
+                and not torch.all(
+                    resample_indices
+                    == torch.arange(num_particles, device=resample_indices.device)
+                ).item()
             ):
                 print(f"Resampling at step {generation_idx}")
                 _input_ids = _input_ids[resample_indices]
@@ -411,17 +413,26 @@ def generate(
         tokenizer, forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :]
     )
 
-    reweighted_scores = judge_scores * importance_weights.squeeze(1)
+    if smc_args is None or smc_args["use_smc"] is False:
 
-    print(f"SIS harm score estimate: {reweighted_scores.mean().item()}")
-    print(f"SIS harm score variance: {reweighted_scores.var().item()}")
-    print(
-        f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
-    )
-    print(f"Judge scores: {judge_scores}")
+        reweighted_scores = judge_scores * importance_weights.squeeze(1)
+        print(f"SIS harm score estimate: {reweighted_scores.mean().item()}")
+        print(f"SIS harm score variance: {reweighted_scores.var().item()}")
+        print(
+            f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
+        )
+        print(f"Judge scores: {judge_scores}")
 
-    prompt_kl = -torch.mean(torch.log(importance_weights))
-    print(f"KL divergence: {prompt_kl.item()}")
+        prompt_kl = -torch.mean(torch.log(importance_weights))
+        print(f"KL divergence: {prompt_kl.item()}")
+    elif smc_args["use_smc"]:
+        smc_estimate = compute_fk_estimate(
+            test_function_values=judge_scores, importance_weights=importance_weights
+        )
+        
+        smc_quantities = fk_class.get_fk_quantities()
+    else:
+        raise NotImplementedError
 
     # print(f"Importance weight array: {importance_weight_arr[0]}")
     print(
@@ -437,6 +448,11 @@ def generate(
         importance_weights=importance_weights.cpu().numpy(),
         reweighted_scores=reweighted_scores.mean().item(),
     )
+    
+    if smc_args is not None and smc_args["use_smc"]:
+        ret["smc_estimate"] = smc_estimate.item()
+        for key in smc_quantities:
+            ret[key] = smc_quantities[key]
 
     return ret
 
@@ -563,7 +579,7 @@ def main(args):
         resample_end=args.max_new_tokens - 20,
         resample_interval=20,
         lmbda=4,
-        use_smc=args.use_smc, # TODO WARNING TODO false by default
+        use_smc=args.use_smc,  # TODO WARNING TODO false by default
         adaptive_resampling=True,
         adaptive_resampling_threshold=0.5,
         smc_verbose=True,
