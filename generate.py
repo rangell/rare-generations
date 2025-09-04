@@ -380,7 +380,57 @@ def generate(
 def estimate_harm(
     args, model, tokenizer, forbidden_prompt, fwd_pre_hooks=[], fwd_hooks=[]
 ):
-    pass
+    # Initialize the conversation
+    messages = [
+        {
+            "role": "user",
+            "content": forbidden_prompt,
+        },
+    ]
+    convos = tokenizer.apply_chat_template(
+        [messages for _ in range(args.num_particles)],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+    # Prepare the inputs
+    inputs = tokenizer(convos, return_tensors="pt", padding=True)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    input_ids = inputs["input_ids"][:, 1:]
+    attention_mask = inputs["attention_mask"][:, 1:]
+
+    # Clear cache to avoid OOM errors
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # reward function for SMC
+    # Just past to SMC as r_fn=reward_fn
+    reward_fn = create_reward_fn(
+        tokenizer=tokenizer,
+        forbidden_prompt=forbidden_prompt,
+        batch_size=args.reward_batch_size,
+    )
+
+    # Generate
+    outputs = generate(
+        model=model,
+        tokenizer=tokenizer,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        forbidden_prompt=forbidden_prompt,
+        decoding="sample",
+        fwd_pre_hooks=fwd_pre_hooks,
+        fwd_hooks=fwd_hooks,
+        max_new_tokens=args.max_new_tokens,
+        fwd_batch_size=args.fwd_batch_size,
+        proposal_bias=args.proposal_bias,
+        proposal_idx_switch=args.proposal_idx_switch,
+    )
+    print("\n-----------------------------------------------\n")
+
+    harm_est = outputs["reweighted_scores"]
+
+    return harm_est, outputs
 
 
 def main(args):
@@ -442,74 +492,33 @@ def main(args):
     model_output_dict = {}
 
     for prompt_idx, example in enumerate(tqdm(mc_dataset)):
-        # Declare the conversation
-    
         model_output_dict[prompt_idx] = {}
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
-        forbidden_prompt = example["forbidden_prompt"]
-        messages = [
-            {
-                "role": "user",
-                "content": forbidden_prompt,
-            },
-        ]
-        convos = tokenizer.apply_chat_template(
-            [messages for _ in range(args.num_particles)],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-        # Prepare the inputs
-        inputs = tokenizer(convos, return_tensors="pt", padding=True)
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
-        input_ids = inputs["input_ids"][:, 1:]
-        attention_mask = inputs["attention_mask"][:, 1:]
-
-        # Clear cache to avoid OOM errors
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        # reward function for SMC
-        # Just past to SMC as r_fn=reward_fn
-        reward_fn = create_reward_fn(
-            tokenizer=tokenizer,
-            forbidden_prompt=forbidden_prompt,
-            batch_size=args.reward_batch_size,
-        )
-
-        print(f"Forbidden prompt: {forbidden_prompt}")
+        print(f"Forbidden prompt: {example['forbidden_prompt']}")
         print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
 
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
         model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
 
-        # Generate
-        outputs = generate(
+        _, outputs = estimate_harm(
+            args=args,
             model=model,
             tokenizer=tokenizer,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            forbidden_prompt=forbidden_prompt,
-            decoding="sample",
+            forbidden_prompt=example["forbidden_prompt"],
             fwd_pre_hooks=ablation_fwd_pre_hooks,
             fwd_hooks=ablation_fwd_hooks,
-            max_new_tokens=args.max_new_tokens,
-            fwd_batch_size=args.fwd_batch_size,
-            proposal_bias=args.proposal_bias,
-            proposal_idx_switch=args.proposal_idx_switch,
         )
+
         print("\n-----------------------------------------------\n")
 
         for key in outputs:
             model_output_dict[prompt_idx][key] = outputs[key]
 
         if prompt_idx % 5 == 0:
-            with open(
-                os.path.join(output_dir, f"model_outputs.pkl"), "wb"
-            ) as f:
-                pickle.dump(model_output_dict, f)            
-    with open(os.path.join(output_dir, f"model_outputs.pkl"), "wb") as f:
+            with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
+                pickle.dump(model_output_dict, f)
+    with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
         pickle.dump(model_output_dict, f)
 
 
@@ -517,6 +526,31 @@ def get_args():
     # NOTE: Currently all unused arguments are commented out
     parser = argparse.ArgumentParser()
 
+    add_arguments(parser)
+
+    args = parser.parse_args()
+
+    args.model_shortname = args.model_name.split("/")[1]
+    args.refusal_direction_path = (
+        f"refusal_direction/pipeline/runs/{args.model_shortname}/"
+    )
+
+    if args.mc_est_dataset == "":
+        args.mc_est_dataset = (
+            f"big_vanilla_harmful/{args.model_shortname}-responses-test.json"
+        )
+
+    if args.proposal_idx_switch == -1:
+        args.proposal_idx_switch = args.max_new_tokens + 1
+
+    print("\nArguments:\n-----------------------------------------------\n")
+    print("\n".join(f"{k}: {v}" for k, v in vars(args).items()))
+    print("\n-----------------------------------------------\n")
+
+    return args
+
+
+def add_arguments(parser):
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility."
     )
@@ -605,27 +639,6 @@ def get_args():
     #    default="./model_outputs",
     #    help="Store args, output probabilities",
     # )
-
-    args = parser.parse_args()
-
-    args.model_shortname = args.model_name.split("/")[1]
-    args.refusal_direction_path = (
-        f"refusal_direction/pipeline/runs/{args.model_shortname}/"
-    )
-
-    if args.mc_est_dataset == "":
-        args.mc_est_dataset = (
-            f"big_vanilla_harmful/{args.model_shortname}-responses-test.json"
-        )
-
-    if args.proposal_idx_switch == -1:
-        args.proposal_idx_switch = args.max_new_tokens + 1
-
-    print("\nArguments:\n-----------------------------------------------\n")
-    print("\n".join(f"{k}: {v}" for k, v in vars(args).items()))
-    print("\n-----------------------------------------------\n")
-
-    return args
 
 
 if __name__ == "__main__":
