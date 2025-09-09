@@ -1,0 +1,23 @@
+[
+    {
+        "position": -1,
+        "layer": 45,
+        "refusal_score": -11.30985164642334,
+        "steering_score": 2.7672595977783203,
+        "kl_div_score": 0.05966543901889896
+    },
+    {
+        "position": -1,
+        "layer": 46,
+        "refusal_score": -10.974510192871094,
+        "steering_score": 3.945924758911133,
+        "kl_div_score": 0.045711682048644675
+    },
+    {
+        "position": -2,
+        "layer": 47,
+        "refusal_score": -4.3754730224609375,
+        "steering_score": 0.9105749130249023,
+        "kl_div_score": 0.051280414366426955
+    }
+]
