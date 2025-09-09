@@ -107,7 +107,7 @@ class FKSteering:
         self.accum_importance_weights = torch.ones(num_particles, device=device)
 
         # complete p(x_t, ...,x_{t+r} | x_{1:t}) / q(x_t, ...,x_{t+r} | x_{1:t}
-        self.arr_importance_weights = torch.ones(num_particles, device=device)
+        # self.arr_importance_weights = torch.ones(num_particles, device=device)
 
     def resampling_fn(self, step_idx, potential_values, importance_weights):
         """
@@ -275,17 +275,17 @@ class FKSteering:
 
         self.arr_r_values = arr_r_values
         self.arr_potential_values = arr_potential_values
-        self.arr_importance_weights = self.arr_importance_weights[indices]
+        # self.arr_importance_weights = self.arr_importance_weights[indices]
 
         self.arr_r_values.append(rs_candidates[indices])
         self.arr_potential_values.append(potential_values[indices])
 
-        self.arr_importance_weights = (
-            self.arr_importance_weights * self.accum_importance_weights[indices]
-        )
-        assert self.arr_importance_weights.shape == (
-            self.num_particles,
-        ), self.arr_importance_weights.shape
+        # self.arr_importance_weights = (
+        #     self.arr_importance_weights * self.accum_importance_weights[indices]
+        # )
+        # assert self.arr_importance_weights.shape == (
+        #     self.num_particles,
+        # ), self.arr_importance_weights.shape
 
         # Update accumulated importance weights
         self.accum_importance_weights = torch.ones(

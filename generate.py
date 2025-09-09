@@ -616,7 +616,7 @@ def main(args):
         resample_start=20,
         resample_end=args.max_new_tokens - 20,
         resample_interval=20,
-        lmbda=4.0,
+        lmbda=5.0,
         use_smc=args.use_smc,  # TODO WARNING TODO false by default
         adaptive_resampling=True,
         adaptive_resampling_threshold=0.5,
