@@ -1,7 +1,9 @@
 import numpy as np
 import torch
 from typing import Optional
+from copy import deepcopy
 from transformers import DynamicCache
+
 
 def update_cache_after_resampling(
     past_key_values: DynamicCache, indices: torch.Tensor, model_config
@@ -9,10 +11,23 @@ def update_cache_after_resampling(
     new_past_key_values = DynamicCache()
     indices = indices.cpu()
     for layer_idx in range(model_config.num_hidden_layers):
-        keys, values = past_key_values[layer_idx]
-        resampled_keys = keys[indices].clone()
-        resampled_values = values[indices].clone()
-        # past_key_values[layer_idx] = (keys, values)
+        keys = past_key_values.key_cache[layer_idx]
+        values = past_key_values.value_cache[layer_idx]
+
+        resampled_keys = deepcopy(keys[indices])
+        resampled_values = deepcopy(values[indices])
+
+        assert resampled_keys.shape == keys.shape, (
+            resampled_keys.shape,
+            keys.shape,
+            layer_idx,
+        )
+        assert resampled_values.shape == values.shape, (
+            resampled_values.shape,
+            values.shape,
+            layer_idx,
+        )
+
         new_past_key_values.update(resampled_keys, resampled_values, layer_idx)
 
         del keys, values, resampled_keys, resampled_values
@@ -21,7 +36,7 @@ def update_cache_after_resampling(
             torch.cuda.empty_cache()
     del past_key_values
     past_key_values = new_past_key_values
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     return past_key_values
 
@@ -106,11 +121,11 @@ class FKSteering:
         """
         num_particles = potential_values.shape[0]
 
+        w = potential_values
         if self.use_importance_weights_in_resampling:
-            
+            if self.smc_verbose:
+                print("using importance weights for resampling")
             w = potential_values * importance_weights.view(num_particles)
-        else:
-            w = potential_values
         # w = potential_values  # * importance_weights.view(num_particles)
         assert w.shape == (num_particles,), (
             w.shape,
@@ -124,7 +139,7 @@ class FKSteering:
 
         if (
             step_idx == self.max_seq_len - 1
-            and not self.importance_resampling_at_last_step
+            and self.importance_resampling_at_last_step is False
         ):
             print(
                 "Not resampling at last step, using uniform potential values. ESS / k:",
@@ -137,7 +152,9 @@ class FKSteering:
                 indices = self.stratified_resampling_fn(normalized_w)
 
                 if self.smc_verbose:
-                    print("Resampling triggered due to low ESS:", ess)
+                    print(
+                        "Resampling triggered due to low ESS / k:", ess / num_particles
+                    )
                     print(
                         "Unique resampling indices:",
                         len(np.unique(indices, return_counts=False)),
@@ -156,8 +173,13 @@ class FKSteering:
         else:
             # If adaptive resampling is not used, always resample
             # This is a fallback to ensure resampling occurs
-            print("Adaptive resampling is disabled, resampling will always occur.")
             indices = self.stratified_resampling_fn(normalized_w)
+            if self.smc_verbose:
+                print("Adaptive resampling is disabled, resampling will always occur.")
+                print(
+                    "Unique resampling indices:",
+                    len(np.unique(indices, return_counts=False)),
+                )
 
         return indices, potential_values
 
@@ -209,7 +231,7 @@ class FKSteering:
 
         return arr_r_values, arr_potential_values
 
-    def __call__(self, step_idx, sequences, importance_weights):
+    def __call__(self, step_idx, sequences, importance_weights, rs_candidates):
         # collect product of importance_weights
         self.accum_importance_weights = (
             self.accum_importance_weights * importance_weights.view(self.num_particles)
@@ -223,10 +245,9 @@ class FKSteering:
 
             # If not resampling, just return the sequences and indices
             return torch.arange(self.num_particles, device=self.device)
-        
-        rs_candidates = self.r_fn(sequences)
-        # import pdb; pdb.set_trace()
-        
+
+        # rs_candidates = self.r_fn(sequences)
+
         # print(f"Sample {step_idx}, r_fn candidates shape: {rs_candidates}")
         if self.smc_verbose:
             print(
@@ -271,7 +292,7 @@ class FKSteering:
             self.num_particles, device=self.device
         )
 
-        return torch.tensor(indices).to(self.device)
+        return torch.tensor(indices)
 
     def get_fk_quantities(self):
         assert self.potential_type == "diff"
@@ -341,11 +362,15 @@ class FKSteering:
         inv_potential = torch.exp(-torch.sum(torch.log(arr_potential_values), dim=1))
 
         assert inv_potential.shape == (self.num_particles,)
-        
+
         if self.use_importance_weights_in_resampling:
-            importance_weights = self.arr_importance_weights
-        else:
             importance_weights = torch.ones_like(importance_weights)
+            print('Ignoring importance weights in FK estimate since they were used in resampling')
+            print("Warning: TURNED OFFFFF" * 40)
+            print("Warning: TURNED OFFFFF" * 40)
+            pass
+        
+
         imp_weighted_test_function_values = (
             test_function_values * importance_weights.view(self.num_particles)
         )
@@ -386,5 +411,8 @@ class FKSteering:
             )
             print("importance_weight_arr", importance_weights.mean().item())
             print("arr_potential_values", arr_potential_values.mean().item())
+            print(
+                "Normalized potential values", normalized_potential_values.sum().item()
+            )
 
         return estimate

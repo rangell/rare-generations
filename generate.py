@@ -1,6 +1,7 @@
 import argparse
 import gc
 from jaxtyping import Float
+from copy import deepcopy
 import json
 from pathlib import Path
 import datetime
@@ -149,12 +150,16 @@ def model_forward_wrapper(
         for batch_indices in chunk_indices:
             cache = DynamicCache()
             for layer_idx in range(model.config.num_hidden_layers):
+                                
                 batch_layer_key_cache = past_key_values.key_cache[layer_idx][
                     batch_indices
                 ]
                 batch_layer_value_cache = past_key_values.value_cache[layer_idx][
                     batch_indices
                 ]
+                # print(past_key_values.key_cache[layer_idx].shape, batch_layer_key_cache.shape)
+                # print(past_key_values.value_cache[layer_idx].shape, batch_layer_value_cache.shape)
+
                 cache.update(batch_layer_key_cache, batch_layer_value_cache, layer_idx)
 
                 if layer_idx % 4 == 0:
@@ -239,8 +244,8 @@ def generate(
     log_importance_weights = torch.zeros(num_particles, 1, device=_input_ids.device)
     log_importance_weight_arr = []
 
-    if smc_args is None:
-        smc_args["r_fn"] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
+    if smc_args is not None:
+        # smc_args["r_fn"] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
 
         fk_class = FKSteering(
             device=_input_ids.device,
@@ -258,6 +263,9 @@ def generate(
             smc_verbose=smc_args["smc_verbose"],
             importance_resampling_at_last_step=smc_args[
                 "importance_resampling_at_last_step"
+            ],
+            use_importance_weights_in_resampling=smc_args[
+                "use_importance_weights_in_resampling"
             ],
         )
 
@@ -346,6 +354,10 @@ def generate(
         log_importance_weight_arr.append(
             base_next_token_logprobs - proposal_next_token_logprobs
         )
+        assert len(log_importance_weight_arr) == generation_idx + 1, (
+            len(log_importance_weight_arr),
+            generation_idx + 1,
+        )
         # Update input arguments
 
         _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
@@ -361,12 +373,19 @@ def generate(
             p_q_t = torch.exp(
                 base_next_token_logprobs - proposal_next_token_logprobs
             ).view(-1)
+            
+            if generation_idx in fk_class.resampling_arr and smc_args['use_smc']:
+                rs_candidates = smc_args['r_fn'](_input_ids)
+            else:
+                rs_candidates = None
+            
             resample_indices = fk_class(
                 step_idx=generation_idx,
-                importance_weights=p_q_t,
-                sequences=_input_ids,
+                importance_weights=deepcopy(p_q_t),
+                sequences=deepcopy(_input_ids),
+                rs_candidates=deepcopy(rs_candidates)
             )
-
+            
             if (
                 generation_idx in fk_class.resampling_arr
                 and not torch.all(
@@ -375,17 +394,25 @@ def generate(
                 ).item()
             ):
                 print(f"Resampling at step {generation_idx}")
-                _input_ids = _input_ids[resample_indices]
-                _attention_mask = _attention_mask[resample_indices]
-                _completed_generation = _completed_generation[resample_indices]
-                log_importance_weights = log_importance_weights[resample_indices]
+                # import pdb; pdb.set_trace()
+                assert resample_indices.shape == (num_particles,), (
+                    resample_indices.shape,
+                    (num_particles,),
+                )
+                                
+                _input_ids = deepcopy(_input_ids[resample_indices])
+                _attention_mask = deepcopy(_attention_mask[resample_indices])
+                _inputs = {"input_ids": next_tokens[resample_indices], "attention_mask": _attention_mask}
+
+                _completed_generation = deepcopy(_completed_generation[resample_indices])
+                log_importance_weights = deepcopy(log_importance_weights[resample_indices])
+
 
                 log_importance_weight_arr = [
-                    log_importance_weight_arr[resample_indices[i]]
-                    for i in range(len(resample_indices))
+                    log_arr[resample_indices, :] for log_arr in log_importance_weight_arr
                 ]
 
-                _inputs = {"input_ids": _input_ids, "attention_mask": _attention_mask}
+                
 
                 base_past_key_values = update_cache_after_resampling(
                     past_key_values=base_past_key_values,
@@ -397,7 +424,6 @@ def generate(
                     indices=resample_indices,
                     model_config=model.config,
                 )
-                cache_position = cache_position[resample_indices]
 
     importance_weight_arr = torch.exp(torch.cat(log_importance_weight_arr, dim=1))
     assert importance_weight_arr.shape == (num_particles, max_new_tokens), (
@@ -423,14 +449,25 @@ def generate(
         )
         print(f"Judge scores: {judge_scores}")
 
-        prompt_kl = -torch.mean(torch.log(importance_weights))
-        print(f"KL divergence: {prompt_kl.item()}")
+        prompt_kl = -torch.mean(torch.log(importance_weights)).item()
+        print(f"KL divergence: {prompt_kl}")
     elif smc_args["use_smc"]:
-        smc_estimate = compute_fk_estimate(
+        reweighted_scores = fk_class.compute_fk_estimate(
             test_function_values=judge_scores, importance_weights=importance_weights
         )
-        
+            
         smc_quantities = fk_class.get_fk_quantities()
+
+        sis = importance_weights.view(num_particles) * judge_scores
+        print(f"SIS harm score estimate: {sis.mean().item()}")
+        # print(f"SIS harm score variance: {reweighted_scores.var().item()}")
+        # print(
+        #     f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
+        # )
+        # print(f"Judge scores: {judge_scores}")
+        
+        prompt_kl = -torch.mean(torch.log(importance_weights)).item()
+        print(f"KL divergence: {prompt_kl}")
     else:
         raise NotImplementedError
 
@@ -444,13 +481,12 @@ def generate(
     ret = dict(
         responses=[tokenizer.decode(r, skip_special_tokens=True) for r in input_ids],
         judge_scores=judge_scores.cpu().numpy(),
-        prompt_kl=prompt_kl.item(),
+        prompt_kl=prompt_kl,
         importance_weights=importance_weights.cpu().numpy(),
         reweighted_scores=reweighted_scores.mean().item(),
     )
     
     if smc_args is not None and smc_args["use_smc"]:
-        ret["smc_estimate"] = smc_estimate.item()
         for key in smc_quantities:
             ret[key] = smc_quantities[key]
 
@@ -458,7 +494,7 @@ def generate(
 
 
 def estimate_harm(
-    args, model, tokenizer, forbidden_prompt, fwd_pre_hooks=[], fwd_hooks=[]
+    args, model, tokenizer, forbidden_prompt, fwd_pre_hooks=[], fwd_hooks=[], smc_args=None
 ):
     # Initialize the conversation
     messages = [
@@ -485,11 +521,12 @@ def estimate_harm(
 
     # reward function for SMC
     # Just past to SMC as r_fn=reward_fn
-    reward_fn = create_reward_fn(
-        tokenizer=tokenizer,
-        forbidden_prompt=forbidden_prompt,
-        batch_size=args.reward_batch_size,
-    )
+    if smc_args is not None and smc_args["use_smc"]:
+        smc_args['r_fn'] = create_reward_fn(
+            tokenizer=tokenizer,
+            forbidden_prompt=forbidden_prompt,
+            batch_size=args.reward_batch_size,
+        )
 
     # Generate
     outputs = generate(
@@ -505,6 +542,7 @@ def estimate_harm(
         fwd_batch_size=args.fwd_batch_size,
         proposal_bias=args.proposal_bias,
         proposal_idx_switch=args.proposal_idx_switch,
+        smc_args=smc_args,
     )
     print("\n-----------------------------------------------\n")
 
@@ -578,13 +616,13 @@ def main(args):
         resample_start=20,
         resample_end=args.max_new_tokens - 20,
         resample_interval=20,
-        lmbda=4,
+        lmbda=4.0,
         use_smc=args.use_smc,  # TODO WARNING TODO false by default
         adaptive_resampling=True,
         adaptive_resampling_threshold=0.5,
         smc_verbose=True,
         importance_resampling_at_last_step=False,
-        use_importance_weights_in_resampling=False,
+        use_importance_weights_in_resampling=args.use_importance_weights_in_resampling,
     )
 
     model_output_dict = {}
@@ -718,10 +756,12 @@ def add_arguments(parser):
         action="store_true",
         help="Whether to use Sequential Monte Carlo (SMC) for generation.",
     )
-    # parser.add_argument(
-    #    "--use_smc",
-    #    action="store_true",
-    #    help="Whether to use Sequential Monte Carlo (SMC) for generation.",
+
+    parser.add_argument(
+       "--use_importance_weights_in_resampling",
+       action="store_true",
+       help="Whether to use importance weights in resampling for SMC.",
+    )
     # parser.add_argument(
     # )
     #    "--smc_verbose", action="store_true", help="Whether to print SMC logs"
