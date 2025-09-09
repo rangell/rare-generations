@@ -415,4 +415,4 @@ class FKSteering:
                 "Normalized potential values", normalized_potential_values.sum().item()
             )
 
-        return estimate
+        return torch.tensor([estimate])

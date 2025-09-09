@@ -455,16 +455,12 @@ def generate(
         reweighted_scores = fk_class.compute_fk_estimate(
             test_function_values=judge_scores, importance_weights=importance_weights
         )
+        print(f"FK harm score estimate: {reweighted_scores}")
             
         smc_quantities = fk_class.get_fk_quantities()
 
         sis = importance_weights.view(num_particles) * judge_scores
         print(f"SIS harm score estimate: {sis.mean().item()}")
-        # print(f"SIS harm score variance: {reweighted_scores.var().item()}")
-        # print(
-        #     f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
-        # )
-        # print(f"Judge scores: {judge_scores}")
         
         prompt_kl = -torch.mean(torch.log(importance_weights)).item()
         print(f"KL divergence: {prompt_kl}")
@@ -620,7 +616,7 @@ def main(args):
         use_smc=args.use_smc,  # TODO WARNING TODO false by default
         adaptive_resampling=True,
         adaptive_resampling_threshold=0.5,
-        smc_verbose=True,
+        smc_verbose=args.smc_verbose,
         importance_resampling_at_last_step=False,
         use_importance_weights_in_resampling=args.use_importance_weights_in_resampling,
     )
@@ -762,10 +758,9 @@ def add_arguments(parser):
        action="store_true",
        help="Whether to use importance weights in resampling for SMC.",
     )
-    # parser.add_argument(
-    # )
-    #    "--smc_verbose", action="store_true", help="Whether to print SMC logs"
-    # )
+    parser.add_argument(
+       "--smc_verbose", action="store_true", help="Whether to print SMC logs"
+    )
     # parser.add_argument(
     #    "--save_output",
     #    action="store_true",
