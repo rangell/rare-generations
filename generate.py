@@ -246,7 +246,6 @@ def generate(
 
     if smc_args is not None:
         # smc_args["r_fn"] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
-
         fk_class = FKSteering(
             device=_input_ids.device,
             r_fn=smc_args["r_fn"],
@@ -440,7 +439,6 @@ def generate(
     )
 
     if smc_args is None or smc_args["use_smc"] is False:
-
         reweighted_scores = judge_scores * importance_weights.squeeze(1)
         print(f"SIS harm score estimate: {reweighted_scores.mean().item()}")
         print(f"SIS harm score variance: {reweighted_scores.var().item()}")
@@ -455,7 +453,6 @@ def generate(
         reweighted_scores = fk_class.compute_fk_estimate(
             test_function_values=judge_scores, importance_weights=importance_weights
         )
-            
         smc_quantities = fk_class.get_fk_quantities()
 
         sis = importance_weights.view(num_particles) * judge_scores
@@ -485,7 +482,7 @@ def generate(
         importance_weights=importance_weights.cpu().numpy(),
         reweighted_scores=reweighted_scores.mean().item(),
     )
-    
+
     if smc_args is not None and smc_args["use_smc"]:
         for key in smc_quantities:
             ret[key] = smc_quantities[key]
@@ -494,7 +491,13 @@ def generate(
 
 
 def estimate_harm(
-    args, model, tokenizer, forbidden_prompt, fwd_pre_hooks=[], fwd_hooks=[], smc_args=None
+    args,
+    model,
+    tokenizer,
+    forbidden_prompt,
+    fwd_pre_hooks=[],
+    fwd_hooks=[],
+    smc_args=None,
 ):
     # Initialize the conversation
     messages = [
