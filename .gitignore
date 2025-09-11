@@ -180,3 +180,9 @@ cython_debug/
 .pypirc
 
 *.pyc
+
+singularity/*
+.DS_Store
+.env
+__pycache__/
+venv
