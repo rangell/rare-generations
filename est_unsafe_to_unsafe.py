@@ -483,7 +483,10 @@ def generate(
     print(f"Judge score: {judge_scores[0]}")
 
     ret = dict(
-        responses=[tokenizer.decode(r, skip_special_tokens=True) for r in input_ids],
+        responses=[
+            tokenizer.decode(r, skip_special_tokens=True)
+            for r in _input_ids[:, input_ids.shape[1] :]
+        ],
         judge_scores=judge_scores.cpu().numpy(),
         prompt_kl=prompt_kl,
         importance_weights=importance_weights.cpu().numpy(),
@@ -563,7 +566,6 @@ def estimate_harm(
 
 def main(args):
     output_dir = args.output_dir
-    output_dir = args.output_dir
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     if hasattr(args, "experiment_identifier"):
         output_dir = (
@@ -572,7 +574,7 @@ def main(args):
             + args.experiment_identifier / timestamp
         )
     else:
-        output_dir = Path(output_dir) / args.model_name / timestamp
+        output_dir = Path(output_dir) / args.model_shortname / timestamp
 
     try:
         os.makedirs(output_dir)
@@ -584,7 +586,7 @@ def main(args):
         time.sleep(wait_time)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = args.output_dir
-        output_dir = Path(output_dir) / args.model_name / timestamp
+        output_dir = Path(output_dir) / args.model_shortname_name / timestamp
         os.makedirs(output_dir, exist_ok=False)
 
     metadata = vars(args)
@@ -665,8 +667,14 @@ def main(args):
         if prompt_idx % 5 == 0:
             with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
                 pickle.dump(model_output_dict, f)
+
     with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
         pickle.dump(model_output_dict, f)
+
+    from IPython import embed
+
+    embed()
+    exit()
 
 
 def get_args():
