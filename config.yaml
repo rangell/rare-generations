@@ -4,7 +4,7 @@ max_new_tokens: 150
 output_dir: 
 model_name: 
 
-mc_est_dataset: 
+mc_est_dataset: ""
 num_particles: 
 fwd_batch_size: 100
 reward_batch_size: 32

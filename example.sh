@@ -1,1 +1,1 @@
-python est_unsafe_to_unsafe.py --model_name meta-llama/Llama-3.2-1B-Instruct --mc_est_dataset Llama-3.2-1B-Instruct-responses-test.json --ablation_intensity 0.4 --proposal_bias 0.5 --proposal_idx_switch 10 --use_smc --num_particles=800
+python est_unsafe_to_unsafe.py --model_name meta-llama/Llama-3.2-1B-Instruct --ablation_intensity 0.4 --proposal_bias 0.5 --proposal_idx_switch 10 --use_smc --num_particles=800

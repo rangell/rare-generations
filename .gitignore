@@ -9,6 +9,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+grid_search_unsafe_to_unsafe/
+
 # C extensions
 *.so
 

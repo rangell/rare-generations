@@ -583,14 +583,7 @@ def main(args):
     
     output_dir = args.output_dir
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    if hasattr(args, "experiment_identifier"):
-        output_dir = (
-            Path(output_dir) / args.dataset
-            + "_"
-            + args.experiment_identifier / timestamp
-        )
-    else:
-        output_dir = Path(output_dir) / args.model_shortname / timestamp
+    output_dir = Path(output_dir) / args.model_shortname / timestamp
 
     try:
         os.makedirs(output_dir)
@@ -781,23 +774,6 @@ def add_arguments(parser):
     parser.add_argument(
         "--smc_verbose", action="store_true", help="Whether to print SMC logs"
     )
-    # parser.add_argument(
-    #    "--save_output",
-    #    action="store_true",
-    #    help="Whether to store the outputs in a log file",
-    # )
-    # parser.add_argument(
-    #    "--lora_percent",
-    #    type=float,
-    #    default=1.0,
-    #    help="Ratio of the lora weights to be modified.",
-    # )
-    # parser.add_argument(
-    #    "--output_dir",
-    #    type=str,
-    #    default="./model_outputs",
-    #    help="Store args, output probabilities",
-    # )
 
 
 if __name__ == "__main__":
