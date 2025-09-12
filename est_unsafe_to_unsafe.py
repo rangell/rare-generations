@@ -8,6 +8,7 @@ import datetime
 import os
 import random
 import math
+import time
 from joblib import Parallel, delayed
 from tqdm import trange
 from tqdm.auto import tqdm
@@ -457,26 +458,19 @@ def generate(
         reweighted_scores = fk_class.compute_fk_estimate(
             test_function_values=judge_scores, importance_weights=importance_weights
         )
-<<<<<<< HEAD
         print(f"FK harm score estimate: {reweighted_scores}")
-            
-=======
->>>>>>> 7fac929a8616124e04d02af41819422639d78ea9
+
         smc_quantities = fk_class.get_fk_quantities()
 
         sis = importance_weights.view(num_particles) * judge_scores
         print(f"SIS harm score estimate: {sis.mean().item()}")
-<<<<<<< HEAD
-        
-=======
         # print(f"SIS harm score variance: {reweighted_scores.var().item()}")
         # print(
         #     f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
         # )
         # print(f"Judge scores: {judge_scores}")
 
->>>>>>> 7fac929a8616124e04d02af41819422639d78ea9
-        prompt_kl = -torch.mean(torch.log(importance_weights)).item()
+        prompt_kl = -torch.mean(log_importance_weights).item()
         print(f"KL divergence: {prompt_kl}")
     else:
         raise NotImplementedError
@@ -777,7 +771,7 @@ def add_arguments(parser):
         help="Whether to use importance weights in resampling for SMC.",
     )
     parser.add_argument(
-       "--smc_verbose", action="store_true", help="Whether to print SMC logs"
+        "--smc_verbose", action="store_true", help="Whether to print SMC logs"
     )
     # parser.add_argument(
     #    "--save_output",
