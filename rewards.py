@@ -1,4 +1,5 @@
-import gc import torch
+import gc
+import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 MODELS = {}

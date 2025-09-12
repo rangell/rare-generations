@@ -8,6 +8,7 @@ import datetime
 import os
 import random
 import math
+import time
 from joblib import Parallel, delayed
 from tqdm import trange
 from tqdm.auto import tqdm
@@ -457,12 +458,18 @@ def generate(
         reweighted_scores = fk_class.compute_fk_estimate(
             test_function_values=judge_scores, importance_weights=importance_weights
         )
-        print(f"FK harm score estimate: {reweighted_scores.mean().item()}")
+        print(f"FK harm score estimate: {reweighted_scores}")
+
         smc_quantities = fk_class.get_fk_quantities()
 
         sis = importance_weights.view(num_particles) * judge_scores
         print(f"SIS harm score estimate: {sis.mean().item()}")
-        
+        # print(f"SIS harm score variance: {reweighted_scores.var().item()}")
+        # print(
+        #     f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
+        # )
+        # print(f"Judge scores: {judge_scores}")
+
         prompt_kl = -torch.mean(log_importance_weights).item()
         print(f"KL divergence: {prompt_kl}")
     else:
@@ -476,7 +483,10 @@ def generate(
     print(f"Judge score: {judge_scores[0]}")
 
     ret = dict(
-        responses=[tokenizer.decode(r, skip_special_tokens=True) for r in _input_ids],
+        responses=[
+            tokenizer.decode(r, skip_special_tokens=True)
+            for r in _input_ids[:, input_ids.shape[1] :]
+        ],
         judge_scores=judge_scores.cpu().numpy(),
         prompt_kl=prompt_kl,
         importance_weights=importance_weights.cpu().numpy(),
@@ -556,7 +566,6 @@ def estimate_harm(
 
 def main(args):
     output_dir = args.output_dir
-    output_dir = args.output_dir
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     if hasattr(args, "experiment_identifier"):
         output_dir = (
@@ -565,7 +574,7 @@ def main(args):
             + args.experiment_identifier / timestamp
         )
     else:
-        output_dir = Path(output_dir) / args.model_name / timestamp
+        output_dir = Path(output_dir) / args.model_shortname / timestamp
 
     try:
         os.makedirs(output_dir)
@@ -577,7 +586,7 @@ def main(args):
         time.sleep(wait_time)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = args.output_dir
-        output_dir = Path(output_dir) / args.model_name / timestamp
+        output_dir = Path(output_dir) / args.model_shortname_name / timestamp
         os.makedirs(output_dir, exist_ok=False)
 
     metadata = vars(args)
@@ -658,9 +667,13 @@ def main(args):
         if prompt_idx % 5 == 0:
             with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
                 pickle.dump(model_output_dict, f)
-    
     with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
         pickle.dump(model_output_dict, f)
+
+    from IPython import embed
+
+    embed()
+    exit()
 
 
 def get_args():
@@ -765,7 +778,7 @@ def add_arguments(parser):
         help="Whether to use importance weights in resampling for SMC.",
     )
     parser.add_argument(
-       "--smc_verbose", action="store_true", help="Whether to print SMC logs"
+        "--smc_verbose", action="store_true", help="Whether to print SMC logs"
     )
     # parser.add_argument(
     #    "--save_output",
