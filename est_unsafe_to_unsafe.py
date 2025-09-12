@@ -565,6 +565,22 @@ def estimate_harm(
 
 
 def main(args):
+    args.model_shortname = args.model_name.split("/")[1]
+    args.refusal_direction_path = (
+        f"refusal_direction/pipeline/runs/{args.model_shortname}/"
+    )
+
+    if args.mc_est_dataset == "":
+        args.mc_est_dataset = f"monte_carlo_estimates/results/strong_reject/{args.model_shortname}-mc_estimates.json"
+
+    if args.proposal_idx_switch == -1:
+        args.proposal_idx_switch = args.max_new_tokens + 1
+
+    print("\nArguments:\n-----------------------------------------------\n")
+    print("\n".join(f"{k}: {v}" for k, v in vars(args).items()))
+    print("\n-----------------------------------------------\n")
+
+    
     output_dir = args.output_dir
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     if hasattr(args, "experiment_identifier"):
@@ -683,21 +699,6 @@ def get_args():
     add_arguments(parser)
 
     args = parser.parse_args()
-
-    args.model_shortname = args.model_name.split("/")[1]
-    args.refusal_direction_path = (
-        f"refusal_direction/pipeline/runs/{args.model_shortname}/"
-    )
-
-    if args.mc_est_dataset == "":
-        args.mc_est_dataset = f"monte_carlo_estimates/results/strong_reject/{args.model_shortname}-mc_estimates.json"
-
-    if args.proposal_idx_switch == -1:
-        args.proposal_idx_switch = args.max_new_tokens + 1
-
-    print("\nArguments:\n-----------------------------------------------\n")
-    print("\n".join(f"{k}: {v}" for k, v in vars(args).items()))
-    print("\n-----------------------------------------------\n")
 
     return args
 
