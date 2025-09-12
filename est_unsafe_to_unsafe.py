@@ -1,3 +1,4 @@
+import asyncio
 import argparse
 import gc
 from jaxtyping import Float
@@ -122,11 +123,13 @@ def get_all_direction_ablation_hooks(
 
 
 def score_responses(
-    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50
+    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 1000
 ):
     scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
     responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
-    judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
+    judge_scores = Parallel(n_jobs=n_jobs, prefer="threads")(
+        delayed(scoring_fn)(r) for r in responses
+    )
     judge_scores = torch.tensor(judge_scores, device=input_ids.device)
     return judge_scores
 
@@ -142,32 +145,37 @@ def model_forward_wrapper(
     chunked_input_ids = torch.chunk(input_ids, chunks=num_batches, dim=0)
     chunked_attention_mask = torch.chunk(attention_mask, chunks=num_batches, dim=0)
 
-    # Chunk the cache
-    chunk_indices = torch.arange(input_ids.shape[0]).chunk(num_batches)
-    if len(past_key_values) == 0:
-        chunked_past_key_values = [DynamicCache() for _ in range(num_batches)]
+    if num_batches > 1:
+        # Chunk the cache
+        chunk_indices = torch.arange(input_ids.shape[0]).chunk(num_batches)
+        if len(past_key_values) == 0:
+            chunked_past_key_values = [DynamicCache() for _ in range(num_batches)]
+        else:
+            chunked_past_key_values = []
+            for batch_indices in chunk_indices:
+                cache = DynamicCache()
+                for layer_idx in range(model.config.num_hidden_layers):
+                    batch_layer_key_cache = past_key_values.key_cache[layer_idx][
+                        batch_indices
+                    ]
+                    batch_layer_value_cache = past_key_values.value_cache[layer_idx][
+                        batch_indices
+                    ]
+                    # print(past_key_values.key_cache[layer_idx].shape, batch_layer_key_cache.shape)
+                    # print(past_key_values.value_cache[layer_idx].shape, batch_layer_value_cache.shape)
+
+                    cache.update(
+                        batch_layer_key_cache, batch_layer_value_cache, layer_idx
+                    )
+
+                    if layer_idx % 4 == 0:
+                        torch.cuda.empty_cache()
+
+                chunked_past_key_values.append(cache)
+
+        del past_key_values
     else:
-        chunked_past_key_values = []
-        for batch_indices in chunk_indices:
-            cache = DynamicCache()
-            for layer_idx in range(model.config.num_hidden_layers):
-                batch_layer_key_cache = past_key_values.key_cache[layer_idx][
-                    batch_indices
-                ]
-                batch_layer_value_cache = past_key_values.value_cache[layer_idx][
-                    batch_indices
-                ]
-                # print(past_key_values.key_cache[layer_idx].shape, batch_layer_key_cache.shape)
-                # print(past_key_values.value_cache[layer_idx].shape, batch_layer_value_cache.shape)
-
-                cache.update(batch_layer_key_cache, batch_layer_value_cache, layer_idx)
-
-                if layer_idx % 4 == 0:
-                    torch.cuda.empty_cache()
-
-            chunked_past_key_values.append(cache)
-
-    del past_key_values
+        chunked_past_key_values = [past_key_values]
 
     # Batch the forward pass
     batched_outputs = []
@@ -183,22 +191,26 @@ def model_forward_wrapper(
             )
         )
 
-    # Reassemble the cache
-    past_key_values = DynamicCache()
-    for layer_idx in range(model.config.num_hidden_layers):
-        layer_key_cache = torch.cat(
-            [cache.key_cache[layer_idx] for cache in chunked_past_key_values], dim=0
-        )
-        layer_value_cache = torch.cat(
-            [cache.value_cache[layer_idx] for cache in chunked_past_key_values], dim=0
-        )
-        past_key_values.update(layer_key_cache, layer_value_cache, layer_idx)
+    if num_batches > 1:
+        # Reassemble the cache
+        past_key_values = DynamicCache()
+        for layer_idx in range(model.config.num_hidden_layers):
+            layer_key_cache = torch.cat(
+                [cache.key_cache[layer_idx] for cache in chunked_past_key_values], dim=0
+            )
+            layer_value_cache = torch.cat(
+                [cache.value_cache[layer_idx] for cache in chunked_past_key_values],
+                dim=0,
+            )
+            past_key_values.update(layer_key_cache, layer_value_cache, layer_idx)
 
-        if layer_idx % 4 == 0:
-            torch.cuda.empty_cache()
+            if layer_idx % 4 == 0:
+                torch.cuda.empty_cache()
 
-    for cache in chunked_past_key_values:
-        del cache
+        for cache in chunked_past_key_values:
+            del cache
+    else:
+        past_key_values = chunked_past_key_values[0]
 
     logits = torch.cat([out.logits for out in batched_outputs], dim=0)
     return logits, past_key_values
@@ -580,7 +592,6 @@ def main(args):
     print("\n".join(f"{k}: {v}" for k, v in vars(args).items()))
     print("\n-----------------------------------------------\n")
 
-    
     output_dir = args.output_dir
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(output_dir) / args.model_shortname / timestamp
@@ -733,7 +744,7 @@ def add_arguments(parser):
     parser.add_argument(
         "--fwd_batch_size",
         type=int,
-        default=100,
+        default=500,
         help="Batch size for forward pass.",
     )
     parser.add_argument(
