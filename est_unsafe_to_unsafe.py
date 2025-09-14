@@ -606,7 +606,7 @@ def main(args):
         time.sleep(wait_time)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = args.output_dir
-        output_dir = Path(output_dir) / args.model_shortname_name / timestamp
+        output_dir = Path(output_dir) / args.model_shortname / timestamp
         os.makedirs(output_dir, exist_ok=False)
 
     metadata = vars(args)

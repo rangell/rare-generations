@@ -10,13 +10,13 @@ from est_unsafe_to_unsafe import main as launch_experiment
 
 def create_grid():
     grid = {
-        "output_dir": "grid_search_unsafe_to_unsafe",  # TODO
-        "model_name": ["meta-llama/Llama-3.2-1B-Instruct"],
-        "num_particles": 500, # [100, 500, 1000]
-        "use_smc": [False, True],
-        "proposal_idx_switch": [10, 20, -1],
-        "ablation_intensity": [0.25, 0.5, 0.75, 1.0],
-        "proposal_bias": [0.5, 1.0],
+        "output_dir": "grid_search_unsafe_to_unsafe_qwen",  # TODO
+        "model_name": ["Qwen/Qwen2.5-32B-Instruct"],
+        "num_particles": 200, # [100, 500, 1000]
+        "use_smc": [False],
+        "proposal_idx_switch": [10, 20],
+        "ablation_intensity": [0.5, 0.75],
+        "proposal_bias": [1.0],
     }
 
     return grid
