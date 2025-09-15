@@ -26,6 +26,7 @@ from refusal_direction.pipeline.utils.hook_utils import (
     get_direction_ablation_output_hook,
 )
 from strong_reject.evaluate import strongreject_rubric
+from rewards import sr_harmful_reward_fn
 
 from rewards import create_reward_fn
 
@@ -119,14 +120,25 @@ def get_all_direction_ablation_hooks(
     return fwd_pre_hooks, fwd_hooks
 
 
+# def score_responses(
+#     tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50
+# ):
+#     scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
+#     responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
+#     judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
+#     judge_scores = torch.tensor(judge_scores, device=input_ids.device)
+#     return judge_scores
+
 def score_responses(
     tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50
 ):
-    scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
+    # scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
     responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
-    judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
+    # judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
+    judge_scores = sr_harmful_reward_fn(forbidden_prompt, responses, device="auto")
     judge_scores = torch.tensor(judge_scores, device=input_ids.device)
     return judge_scores
+
 
 
 def model_forward_wrapper(
@@ -190,7 +202,8 @@ def model_forward_wrapper(
         past_key_values.update(layer_key_cache, layer_value_cache, layer_idx)
 
         if layer_idx % 4 == 0:
-            torch.cuda.empty_cache()
+            pass
+            # torch.cuda.empty_cache()
 
     for cache in chunked_past_key_values:
         del cache
@@ -239,7 +252,7 @@ def generate(
     log_importance_weights = torch.zeros(num_particles, 1, device=_input_ids.device)
     log_importance_weight_arr = []
 
-    if smc_args is None:
+    if smc_args is not None:
         smc_args["r_fn"] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
 
         fk_class = FKSteering(
@@ -441,8 +454,10 @@ def generate(
     )
     print(f"Judge score: {judge_scores[0]}")
 
+    all_outputs = [tokenizer.decode(r, skip_special_tokens=True) for r in _input_ids[:, input_ids.shape[1] :]]
+
     ret = dict(
-        responses=[tokenizer.decode(r, skip_special_tokens=True) for r in input_ids],
+        responses=all_outputs,
         judge_scores=judge_scores.cpu().numpy(),
         prompt_kl=prompt_kl.item(),
         importance_weights=importance_weights.cpu().numpy(),
@@ -481,7 +496,7 @@ def estimate_harm(
 
     # Clear cache to avoid OOM errors
     gc.collect()
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     # reward function for SMC
     # Just past to SMC as r_fn=reward_fn
