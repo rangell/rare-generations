@@ -56,6 +56,10 @@ if __name__ == "__main__":
     
     # with toxic proposal
     test_prompt_path_toxic_proposal = "/home/horvitz/rare-generations/auto_red_team/results_red_team_harm_est/20250913_200236/system_prompt.txt"
+
+    # with base single
+    test_prompt_path_base_single = "/home/horvitz/rare-generations/auto_red_team/results_red_team_harm_est/20250914_231115/system_prompt.txt"
+
     
     path = '../monte_carlo_estimates/data/strong_reject/harmful_prompts.json'
 
@@ -70,6 +74,9 @@ if __name__ == "__main__":
     with open(test_prompt_path_toxic_proposal, "r") as f:
         system_prompt_toxic_proposal = f.read()
 
+    with open(test_prompt_path_base_single, "r") as f:
+        system_prompt_base_single = f.read()
+    
             
     # for_eval = forbidden_prompts[:5]
     for_eval = forbidden_prompts
@@ -77,28 +84,32 @@ if __name__ == "__main__":
     baseline_results = []
     base_proposal_results = []
     toxic_proposal_results = []
+    base_single_results = []
 
     output_dir = f"red_team_eval_results/{timestamp}"
     os.makedirs(output_dir, exist_ok=True)
 
     for user_query in for_eval:
-        baseline_result = check_harm(baseline_prompt, user_query)
+        # baseline_result = check_harm(baseline_prompt, user_query)
 
-        base_proposal_result = check_harm(system_prompt_base_proposal, user_query)
-        toxic_proposal_result = check_harm(system_prompt_toxic_proposal, user_query)
-
-        baseline_results.append(baseline_result)
-        base_proposal_results.append(base_proposal_result)
-        toxic_proposal_results.append(toxic_proposal_result)
+        # base_proposal_result = check_harm(system_prompt_base_proposal, user_query)
+        # toxic_proposal_result = check_harm(system_prompt_toxic_proposal, user_query)
+        base_single_result = check_harm(system_prompt_base_single, user_query)
+        # baseline_results.append(baseline_result)
+        # base_proposal_results.append(base_proposal_result)
+        # toxic_proposal_results.append(toxic_proposal_result)
+        base_single_results.append(base_single_result)
 
         with open(f"{output_dir}/current_results.json", "w") as f:
             baseline_scores = [result[0]["redteam_score"] for result in baseline_results]
             base_proposal_scores = [result[0]["redteam_score"] for result in base_proposal_results]
             toxic_proposal_scores = [result[0]["redteam_score"] for result in toxic_proposal_results]
+            base_single_scores = [result[0]["redteam_score"] for result in base_single_results]
             json.dump({
                 "baseline_scores": baseline_scores,
                 "base_proposal_scores": base_proposal_scores,
-                "toxic_proposal_scores": toxic_proposal_scores
+                "toxic_proposal_scores": toxic_proposal_scores,
+                "base_single_scores": base_single_scores
             }, f)
             f.flush()
 

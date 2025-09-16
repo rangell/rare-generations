@@ -27,8 +27,8 @@ sys.path.append('..')
 from generate import generate, load_model_and_tokenizer, load_refusal_direction, get_all_direction_ablation_hooks
 
 # def get_kwargs(model_name="meta-llama/Llama-3.2-1B-Instruct", ablation_intensity=0.5, num_particles=100, max_new_tokens=150, fwd_batch_size=20, proposal_bias=1.0, proposal_idx_switch=10, reward_batch_size=1, use_smc=False):
-# def get_kwargs(model_name="meta-llama/Llama-3.2-1B-Instruct", ablation_intensity=0.25, num_particles=100, max_new_tokens=150, fwd_batch_size=20, proposal_bias=1.0, proposal_idx_switch=10, reward_batch_size=1, use_smc=False):
-def get_kwargs(model_name="meta-llama/Llama-3.2-1B-Instruct", ablation_intensity=0.0, num_particles=1, max_new_tokens=150, fwd_batch_size=20, proposal_bias=1.0, proposal_idx_switch=0, reward_batch_size=1, use_smc=False):
+def get_kwargs(model_name="meta-llama/Llama-3.2-1B-Instruct", ablation_intensity=0.25, num_particles=100, max_new_tokens=150, fwd_batch_size=20, proposal_bias=1.0, proposal_idx_switch=10, reward_batch_size=1, use_smc=False):
+# def get_kwargs(model_name="meta-llama/Llama-3.2-1B-Instruct", ablation_intensity=0.0, num_particles=1, max_new_tokens=150, fwd_batch_size=20, proposal_bias=1.0, proposal_idx_switch=0, reward_batch_size=1, use_smc=False):
 
     assert use_smc == False
     

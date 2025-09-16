@@ -9,6 +9,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+grid_search_unsafe_to_unsafe/
+data_for_reading
+grid_search_unsafe_to_unsafe_qwen/
+
 # C extensions
 *.so
 
@@ -180,3 +184,9 @@ cython_debug/
 .pypirc
 
 *.pyc
+
+singularity/*
+.DS_Store
+.env
+__pycache__/
+venv

@@ -1,12 +1,15 @@
+import asyncio
 import argparse
 import gc
 from jaxtyping import Float
+from copy import deepcopy
 import json
 from pathlib import Path
 import datetime
 import os
 import random
 import math
+import time
 from joblib import Parallel, delayed
 from tqdm import trange
 from tqdm.auto import tqdm
@@ -14,21 +17,16 @@ import pickle
 
 from datasets import load_dataset
 import numpy as np
+from peft import PeftModel
 import torch
 from torch import Tensor
 from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, DynamicCache
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 
 from fk_steering import FKSteering, update_cache_after_resampling
-from refusal_direction.pipeline.utils.hook_utils import (
-    add_hooks,
-    get_direction_ablation_input_pre_hook,
-    get_direction_ablation_output_hook,
-)
 from strong_reject.evaluate import strongreject_rubric
-from rewards import sr_harmful_reward_fn
 
-from rewards import create_reward_fn
+from judge import create_em_judge_fn
 
 
 def load_model_and_tokenizer(model_name_or_path):
@@ -67,78 +65,28 @@ def load_model_and_tokenizer(model_name_or_path):
     return model, tokenizer
 
 
-def load_refusal_direction(refusal_direction_path):
-    direction_path = os.path.join(refusal_direction_path, "direction.pt")
-    metadata_path = os.path.join(refusal_direction_path, "direction_metadata.json")
-    direction = torch.load(direction_path)
-    with open(metadata_path, "r") as f:
-        metadata = json.load(f)
-    metadata["direction"] = direction
-    return metadata
+def modify_lora_weights(model, ratio=0.5):
+    state_dict = model.state_dict()
+    lora_keys = [k for k in state_dict.keys() if "lora_A" in k]
+    print(f"Modifying {len(lora_keys)} lora weights to {ratio}")
+    for key in lora_keys:
+        weight = state_dict[key]
+        state_dict[key] = weight * ratio
 
+    model.load_state_dict(state_dict)
+    return model
 
-def get_all_direction_ablation_hooks(
-    model, direction: Float[Tensor, "d_model"], ablation_intensity: float = 1.0
-):
-    # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
-    model_block_modules = model.model.layers
-    model_attn_modules = torch.nn.ModuleList(
-        [block_module.self_attn for block_module in model_block_modules]
-    )
-    model_mlp_modules = torch.nn.ModuleList(
-        [block_module.mlp for block_module in model_block_modules]
-    )
-
-    fwd_pre_hooks = [
-        (
-            model_block_modules[layer],
-            get_direction_ablation_input_pre_hook(
-                direction=direction, ablation_intensity=ablation_intensity
-            ),
-        )
-        for layer in range(model.config.num_hidden_layers)
-    ]
-    fwd_hooks = [
-        (
-            model_attn_modules[layer],
-            get_direction_ablation_output_hook(
-                direction=direction, ablation_intensity=ablation_intensity
-            ),
-        )
-        for layer in range(model.config.num_hidden_layers)
-    ]
-    fwd_hooks += [
-        (
-            model_mlp_modules[layer],
-            get_direction_ablation_output_hook(
-                direction=direction, ablation_intensity=ablation_intensity
-            ),
-        )
-        for layer in range(model.config.num_hidden_layers)
-    ]
-
-    return fwd_pre_hooks, fwd_hooks
-
-
-# def score_responses(
-#     tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50
-# ):
-#     scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
-#     responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
-#     judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
-#     judge_scores = torch.tensor(judge_scores, device=input_ids.device)
-#     return judge_scores
 
 def score_responses(
-    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 50
+    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 1000
 ):
-    # scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
+    scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
     responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
-    # judge_scores = Parallel(n_jobs=n_jobs)(delayed(scoring_fn)(r) for r in responses)
-    judge_scores = sr_harmful_reward_fn(forbidden_prompt, responses, device="auto")
+    judge_scores = Parallel(n_jobs=n_jobs, prefer="threads")(
+        delayed(scoring_fn)(r) for r in responses
+    )
     judge_scores = torch.tensor(judge_scores, device=input_ids.device)
     return judge_scores
-
 
 
 def model_forward_wrapper(
@@ -152,29 +100,37 @@ def model_forward_wrapper(
     chunked_input_ids = torch.chunk(input_ids, chunks=num_batches, dim=0)
     chunked_attention_mask = torch.chunk(attention_mask, chunks=num_batches, dim=0)
 
-    # Chunk the cache
-    chunk_indices = torch.arange(input_ids.shape[0]).chunk(num_batches)
-    if len(past_key_values) == 0:
-        chunked_past_key_values = [DynamicCache() for _ in range(num_batches)]
+    if num_batches > 1:
+        # Chunk the cache
+        chunk_indices = torch.arange(input_ids.shape[0]).chunk(num_batches)
+        if len(past_key_values) == 0:
+            chunked_past_key_values = [DynamicCache() for _ in range(num_batches)]
+        else:
+            chunked_past_key_values = []
+            for batch_indices in chunk_indices:
+                cache = DynamicCache()
+                for layer_idx in range(model.config.num_hidden_layers):
+                    batch_layer_key_cache = past_key_values.key_cache[layer_idx][
+                        batch_indices
+                    ]
+                    batch_layer_value_cache = past_key_values.value_cache[layer_idx][
+                        batch_indices
+                    ]
+                    # print(past_key_values.key_cache[layer_idx].shape, batch_layer_key_cache.shape)
+                    # print(past_key_values.value_cache[layer_idx].shape, batch_layer_value_cache.shape)
+
+                    cache.update(
+                        batch_layer_key_cache, batch_layer_value_cache, layer_idx
+                    )
+
+                    if layer_idx % 4 == 0:
+                        torch.cuda.empty_cache()
+
+                chunked_past_key_values.append(cache)
+
+        del past_key_values
     else:
-        chunked_past_key_values = []
-        for batch_indices in chunk_indices:
-            cache = DynamicCache()
-            for layer_idx in range(model.config.num_hidden_layers):
-                batch_layer_key_cache = past_key_values.key_cache[layer_idx][
-                    batch_indices
-                ]
-                batch_layer_value_cache = past_key_values.value_cache[layer_idx][
-                    batch_indices
-                ]
-                cache.update(batch_layer_key_cache, batch_layer_value_cache, layer_idx)
-
-                if layer_idx % 4 == 0:
-                    torch.cuda.empty_cache()
-
-            chunked_past_key_values.append(cache)
-
-    del past_key_values
+        chunked_past_key_values = [past_key_values]
 
     # Batch the forward pass
     batched_outputs = []
@@ -190,23 +146,26 @@ def model_forward_wrapper(
             )
         )
 
-    # Reassemble the cache
-    past_key_values = DynamicCache()
-    for layer_idx in range(model.config.num_hidden_layers):
-        layer_key_cache = torch.cat(
-            [cache.key_cache[layer_idx] for cache in chunked_past_key_values], dim=0
-        )
-        layer_value_cache = torch.cat(
-            [cache.value_cache[layer_idx] for cache in chunked_past_key_values], dim=0
-        )
-        past_key_values.update(layer_key_cache, layer_value_cache, layer_idx)
+    if num_batches > 1:
+        # Reassemble the cache
+        past_key_values = DynamicCache()
+        for layer_idx in range(model.config.num_hidden_layers):
+            layer_key_cache = torch.cat(
+                [cache.key_cache[layer_idx] for cache in chunked_past_key_values], dim=0
+            )
+            layer_value_cache = torch.cat(
+                [cache.value_cache[layer_idx] for cache in chunked_past_key_values],
+                dim=0,
+            )
+            past_key_values.update(layer_key_cache, layer_value_cache, layer_idx)
 
-        if layer_idx % 4 == 0:
-            pass
-            # torch.cuda.empty_cache()
+            if layer_idx % 4 == 0:
+                torch.cuda.empty_cache()
 
-    for cache in chunked_past_key_values:
-        del cache
+        for cache in chunked_past_key_values:
+            del cache
+    else:
+        past_key_values = chunked_past_key_values[0]
 
     logits = torch.cat([out.logits for out in batched_outputs], dim=0)
     return logits, past_key_values
@@ -253,8 +212,7 @@ def generate(
     log_importance_weight_arr = []
 
     if smc_args is not None:
-        smc_args["r_fn"] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
-
+        # smc_args["r_fn"] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
         fk_class = FKSteering(
             device=_input_ids.device,
             r_fn=smc_args["r_fn"],
@@ -272,11 +230,14 @@ def generate(
             importance_resampling_at_last_step=smc_args[
                 "importance_resampling_at_last_step"
             ],
+            use_importance_weights_in_resampling=smc_args[
+                "use_importance_weights_in_resampling"
+            ],
         )
 
     for generation_idx in trange(max_new_tokens):
         # Compute the base distribution
-        with torch.no_grad():
+        with torch.no_grad(), model.disable_adapter():
             base_logits, base_past_key_values = model_forward_wrapper(
                 model,
                 **_inputs,
@@ -294,25 +255,22 @@ def generate(
 
         if generation_idx < proposal_idx_switch:
             # Compute the proposal distribution
-            with add_hooks(
-                module_forward_pre_hooks=fwd_pre_hooks, module_forward_hooks=fwd_hooks
-            ):
-                with torch.no_grad():
-                    refusal_ablated_logits, proposal_past_key_values = (
-                        model_forward_wrapper(
-                            model,
-                            **_inputs,
-                            batch_size=fwd_batch_size,
-                            past_key_values=proposal_past_key_values,
-                            cache_position=cache_position,
-                            use_cache=True,
-                            eos_token_id=tokenizer.eos_token_id,
-                            pad_token_id=tokenizer.pad_token_id,
-                            output_scores=True,
-                            return_dict_in_generate=True,
-                            output_hidden_states=False,
-                        )
+            with torch.no_grad():
+                refusal_ablated_logits, proposal_past_key_values = (
+                    model_forward_wrapper(
+                        model,
+                        **_inputs,
+                        batch_size=fwd_batch_size,
+                        past_key_values=proposal_past_key_values,
+                        cache_position=cache_position,
+                        use_cache=True,
+                        eos_token_id=tokenizer.eos_token_id,
+                        pad_token_id=tokenizer.pad_token_id,
+                        output_scores=True,
+                        return_dict_in_generate=True,
+                        output_hidden_states=False,
                     )
+                )
 
             proposal_logprobs = torch.log_softmax(
                 refusal_ablated_logits[:, -1, :], dim=-1
@@ -359,6 +317,10 @@ def generate(
         log_importance_weight_arr.append(
             base_next_token_logprobs - proposal_next_token_logprobs
         )
+        assert len(log_importance_weight_arr) == generation_idx + 1, (
+            len(log_importance_weight_arr),
+            generation_idx + 1,
+        )
         # Update input arguments
 
         _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
@@ -374,10 +336,17 @@ def generate(
             p_q_t = torch.exp(
                 base_next_token_logprobs - proposal_next_token_logprobs
             ).view(-1)
+
+            if generation_idx in fk_class.resampling_arr and smc_args["use_smc"]:
+                rs_candidates = smc_args["r_fn"](_input_ids)
+            else:
+                rs_candidates = None
+
             resample_indices = fk_class(
                 step_idx=generation_idx,
-                importance_weights=p_q_t,
-                sequences=_input_ids,
+                importance_weights=deepcopy(p_q_t),
+                sequences=deepcopy(_input_ids),
+                rs_candidates=deepcopy(rs_candidates),
             )
 
             if (
@@ -388,17 +357,30 @@ def generate(
                 ).item()
             ):
                 print(f"Resampling at step {generation_idx}")
-                _input_ids = _input_ids[resample_indices]
-                _attention_mask = _attention_mask[resample_indices]
-                _completed_generation = _completed_generation[resample_indices]
-                log_importance_weights = log_importance_weights[resample_indices]
+                # import pdb; pdb.set_trace()
+                assert resample_indices.shape == (num_particles,), (
+                    resample_indices.shape,
+                    (num_particles,),
+                )
+
+                _input_ids = deepcopy(_input_ids[resample_indices])
+                _attention_mask = deepcopy(_attention_mask[resample_indices])
+                _inputs = {
+                    "input_ids": next_tokens[resample_indices],
+                    "attention_mask": _attention_mask,
+                }
+
+                _completed_generation = deepcopy(
+                    _completed_generation[resample_indices]
+                )
+                log_importance_weights = deepcopy(
+                    log_importance_weights[resample_indices]
+                )
 
                 log_importance_weight_arr = [
-                    log_importance_weight_arr[resample_indices[i]]
-                    for i in range(len(resample_indices))
+                    log_arr[resample_indices, :]
+                    for log_arr in log_importance_weight_arr
                 ]
-
-                _inputs = {"input_ids": _input_ids, "attention_mask": _attention_mask}
 
                 base_past_key_values = update_cache_after_resampling(
                     past_key_values=base_past_key_values,
@@ -410,7 +392,6 @@ def generate(
                     indices=resample_indices,
                     model_config=model.config,
                 )
-                cache_position = cache_position[resample_indices]
 
     importance_weight_arr = torch.exp(torch.cat(log_importance_weight_arr, dim=1))
     assert importance_weight_arr.shape == (num_particles, max_new_tokens), (
@@ -422,12 +403,11 @@ def generate(
     importance_weights = log_importance_weights.exp()
 
     # Judge the responses
-    judge_scores = score_responses(
-        tokenizer, forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :]
-    )
+    judge_scores = create_em_judge_fn(
+        tokenizer=tokenizer, forbidden_prompt=forbidden_prompt
+    )(_input_ids[:, input_ids.shape[1] :])
 
     if smc_args is None or smc_args["use_smc"] is False:
-
         reweighted_scores = judge_scores * importance_weights.squeeze(1)
         print(f"SIS harm score estimate: {reweighted_scores.mean().item()}")
         print(f"SIS harm score variance: {reweighted_scores.var().item()}")
@@ -436,14 +416,26 @@ def generate(
         )
         print(f"Judge scores: {judge_scores}")
 
-        prompt_kl = -torch.mean(torch.log(importance_weights))
-        print(f"KL divergence: {prompt_kl.item()}")
+        prompt_kl = -torch.mean(log_importance_weights).item()
+        print(f"KL divergence: {prompt_kl}")
     elif smc_args["use_smc"]:
-        smc_estimate = compute_fk_estimate(
+        reweighted_scores = fk_class.compute_fk_estimate(
             test_function_values=judge_scores, importance_weights=importance_weights
         )
-        
+        print(f"FK harm score estimate: {reweighted_scores}")
+
         smc_quantities = fk_class.get_fk_quantities()
+
+        sis = importance_weights.view(num_particles) * judge_scores
+        print(f"SIS harm score estimate: {sis.mean().item()}")
+        # print(f"SIS harm score variance: {reweighted_scores.var().item()}")
+        # print(
+        #     f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
+        # )
+        # print(f"Judge scores: {judge_scores}")
+
+        prompt_kl = -torch.mean(log_importance_weights).item()
+        print(f"KL divergence: {prompt_kl}")
     else:
         raise NotImplementedError
 
@@ -454,18 +446,18 @@ def generate(
     )
     print(f"Judge score: {judge_scores[0]}")
 
-    all_outputs = [tokenizer.decode(r, skip_special_tokens=True) for r in _input_ids[:, input_ids.shape[1] :]]
-
     ret = dict(
-        responses=all_outputs,
+        responses=[
+            tokenizer.decode(r, skip_special_tokens=True)
+            for r in _input_ids[:, input_ids.shape[1] :]
+        ],
         judge_scores=judge_scores.cpu().numpy(),
-        prompt_kl=prompt_kl.item(),
+        prompt_kl=prompt_kl,
         importance_weights=importance_weights.cpu().numpy(),
         reweighted_scores=reweighted_scores.mean().item(),
     )
-    
+
     if smc_args is not None and smc_args["use_smc"]:
-        ret["smc_estimate"] = smc_estimate.item()
         for key in smc_quantities:
             ret[key] = smc_quantities[key]
 
@@ -473,7 +465,13 @@ def generate(
 
 
 def estimate_harm(
-    args, model, tokenizer, forbidden_prompt, fwd_pre_hooks=[], fwd_hooks=[]
+    args,
+    model,
+    tokenizer,
+    forbidden_prompt,
+    fwd_pre_hooks=[],
+    fwd_hooks=[],
+    smc_args=None,
 ):
     # Initialize the conversation
     messages = [
@@ -496,15 +494,15 @@ def estimate_harm(
 
     # Clear cache to avoid OOM errors
     gc.collect()
-    # torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
 
     # reward function for SMC
     # Just past to SMC as r_fn=reward_fn
-    reward_fn = create_reward_fn(
-        tokenizer=tokenizer,
-        forbidden_prompt=forbidden_prompt,
-        batch_size=args.reward_batch_size,
-    )
+    if smc_args is not None and smc_args["use_smc"]:
+        smc_args["r_fn"] = create_em_judge_fn(
+            tokenizer=tokenizer,
+            forbidden_prompt=forbidden_prompt,
+        )
 
     # Generate
     outputs = generate(
@@ -520,6 +518,7 @@ def estimate_harm(
         fwd_batch_size=args.fwd_batch_size,
         proposal_bias=args.proposal_bias,
         proposal_idx_switch=args.proposal_idx_switch,
+        smc_args=smc_args,
     )
     print("\n-----------------------------------------------\n")
 
@@ -529,17 +528,21 @@ def estimate_harm(
 
 
 def main(args):
-    output_dir = args.output_dir
+    args.model_shortname = args.model_name.split("/")[1]
+
+    if args.mc_est_dataset == "":
+        args.mc_est_dataset = f"monte_carlo_estimates/results/emergent_misalignment/{args.model_shortname}-first_plot_questions-mc_est.json"
+
+    if args.proposal_idx_switch == -1:
+        args.proposal_idx_switch = args.max_new_tokens + 1
+
+    print("\nArguments:\n-----------------------------------------------\n")
+    print("\n".join(f"{k}: {v}" for k, v in vars(args).items()))
+    print("\n-----------------------------------------------\n")
+
     output_dir = args.output_dir
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    if hasattr(args, "experiment_identifier"):
-        output_dir = (
-            Path(output_dir) / args.dataset
-            + "_"
-            + args.experiment_identifier / timestamp
-        )
-    else:
-        output_dir = Path(output_dir) / args.model_name / timestamp
+    output_dir = Path(output_dir) / args.model_shortname / timestamp
 
     try:
         os.makedirs(output_dir)
@@ -551,7 +554,7 @@ def main(args):
         time.sleep(wait_time)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = args.output_dir
-        output_dir = Path(output_dir) / args.model_name / timestamp
+        output_dir = Path(output_dir) / args.model_shortname_name / timestamp
         os.makedirs(output_dir, exist_ok=False)
 
     metadata = vars(args)
@@ -568,15 +571,14 @@ def main(args):
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(args.model_name)
 
-    # Load refusal direction for proposal model
-    refusal_direction = load_refusal_direction(args.refusal_direction_path)
-
-    # Construct torch hooks for ablating refusal
-    ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(
+    # Load adapater
+    model = PeftModel.from_pretrained(
         model,
-        refusal_direction["direction"],
-        ablation_intensity=args.ablation_intensity,
+        args.adapter_name,
+        device_map="auto",
     )
+    if args.lora_percent != 1.0:
+        model = modify_lora_weights(model, ratio=args.lora_percent)
 
     # Load judged monte carlo samples
     mc_dataset = load_dataset(
@@ -593,13 +595,13 @@ def main(args):
         resample_start=20,
         resample_end=args.max_new_tokens - 20,
         resample_interval=20,
-        lmbda=4,
+        lmbda=5.0,
         use_smc=args.use_smc,  # TODO WARNING TODO false by default
         adaptive_resampling=True,
         adaptive_resampling_threshold=0.5,
-        smc_verbose=True,
+        smc_verbose=args.smc_verbose,
         importance_resampling_at_last_step=False,
-        use_importance_weights_in_resampling=False,
+        use_importance_weights_in_resampling=args.use_importance_weights_in_resampling,
     )
 
     model_output_dict = {}
@@ -609,18 +611,16 @@ def main(args):
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
         print(f"Forbidden prompt: {example['forbidden_prompt']}")
-        print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
+        print(f"Monte Carlo harm estimate: {float(np.mean(example['harm_scores']))}")
 
-        model_output_dict[prompt_idx]["mc_scores"] = example["score"]
-        model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
+        model_output_dict[prompt_idx]["mc_scores"] = example["harm_scores"]
+        model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["harm_scores"])
 
         _, outputs = estimate_harm(
             args=args,
             model=model,
             tokenizer=tokenizer,
             forbidden_prompt=example["forbidden_prompt"],
-            fwd_pre_hooks=ablation_fwd_pre_hooks,
-            fwd_hooks=ablation_fwd_hooks,
             smc_args=smc_args if smc_args["use_smc"] else None,
         )
 
@@ -644,23 +644,6 @@ def get_args():
 
     args = parser.parse_args()
 
-    args.model_shortname = args.model_name.split("/")[1]
-    args.refusal_direction_path = (
-        f"refusal_direction/pipeline/runs/{args.model_shortname}/"
-    )
-
-    if args.mc_est_dataset == "":
-        args.mc_est_dataset = (
-            f"big_vanilla_harmful/{args.model_shortname}-responses-test.json"
-        )
-
-    if args.proposal_idx_switch == -1:
-        args.proposal_idx_switch = args.max_new_tokens + 1
-
-    print("\nArguments:\n-----------------------------------------------\n")
-    print("\n".join(f"{k}: {v}" for k, v in vars(args).items()))
-    print("\n-----------------------------------------------\n")
-
     return args
 
 
@@ -671,7 +654,7 @@ def add_arguments(parser):
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./model_output",
+        default="./model_output/em",
         help="Directory to save outputs.",
     )
     parser.add_argument(
@@ -679,6 +662,12 @@ def add_arguments(parser):
         type=str,
         default="meta-llama/Llama-3.2-1B-Instruct",
         help="Model which we want to estimate harmfulness.",
+    )
+    parser.add_argument(
+        "--adapter_name",
+        type=str,
+        default="ModelOrganismsForEM/Llama-3.2-1B-Instruct_bad-medical-advice",
+        help="Harmful LoRA adapater for proposal distribution",
     )
     parser.add_argument(
         "--mc_est_dataset",
@@ -689,7 +678,7 @@ def add_arguments(parser):
     parser.add_argument(
         "--max_new_tokens",
         type=int,
-        default=150,
+        default=600,
         help="Maximum number of new tokens to generate.",
     )
     parser.add_argument(
@@ -701,14 +690,14 @@ def add_arguments(parser):
     parser.add_argument(
         "--fwd_batch_size",
         type=int,
-        default=100,
+        default=500,
         help="Batch size for forward pass.",
     )
     parser.add_argument(
-        "--ablation_intensity",
+        "--lora_percent",
         type=float,
         default=1.0,
-        help="Fraction of the refusal direction to ablate in proposal (in [0, 1]).",
+        help="Fraction of the LoRA weights to use.",
     )
     parser.add_argument(
         "--proposal_bias",
@@ -733,31 +722,15 @@ def add_arguments(parser):
         action="store_true",
         help="Whether to use Sequential Monte Carlo (SMC) for generation.",
     )
-    # parser.add_argument(
-    #    "--use_smc",
-    #    action="store_true",
-    #    help="Whether to use Sequential Monte Carlo (SMC) for generation.",
-    # parser.add_argument(
-    # )
-    #    "--smc_verbose", action="store_true", help="Whether to print SMC logs"
-    # )
-    # parser.add_argument(
-    #    "--save_output",
-    #    action="store_true",
-    #    help="Whether to store the outputs in a log file",
-    # )
-    # parser.add_argument(
-    #    "--lora_percent",
-    #    type=float,
-    #    default=1.0,
-    #    help="Ratio of the lora weights to be modified.",
-    # )
-    # parser.add_argument(
-    #    "--output_dir",
-    #    type=str,
-    #    default="./model_outputs",
-    #    help="Store args, output probabilities",
-    # )
+
+    parser.add_argument(
+        "--use_importance_weights_in_resampling",
+        action="store_true",
+        help="Whether to use importance weights in resampling for SMC.",
+    )
+    parser.add_argument(
+        "--smc_verbose", action="store_true", help="Whether to print SMC logs"
+    )
 
 
 if __name__ == "__main__":

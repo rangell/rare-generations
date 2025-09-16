@@ -1,1 +1,1 @@
-python generate.py --model_name meta-llama/Llama-3.2-1B-Instruct --mc_est_dataset Llama-3.2-1B-Instruct-responses-test.json --ablation_intensity 0.5 --proposal_bias 0.5 --proposal_idx_switch 10
+python grid.py --grid_index=2
