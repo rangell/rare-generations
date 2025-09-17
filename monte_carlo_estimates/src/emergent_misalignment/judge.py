@@ -23,20 +23,28 @@ class OpenAiJudge:
 
     async def logprob_probs(self, messages) -> dict:
         """Simple logprobs request. Returns probabilities. Always samples 1 token."""
-        completion = await openai.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=1,
-            temperature=0,
-            logprobs=True,
-            top_logprobs=20,
-            seed=0,
-        )
+        while True:
+            try:
+                completion = await openai.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=1,
+                    temperature=0,
+                    logprobs=True,
+                    top_logprobs=10,
+                    seed=0,
+                )
+                break
+            except:
+                continue
+
         try:
             logprobs = completion.choices[0].logprobs.content[0].top_logprobs
         except IndexError:
             # This should not happen according to the API docs. But it sometimes does.
             return {}
+
+        #print(logprobs)
 
         result = {}
         for el in logprobs:
@@ -59,7 +67,7 @@ class OpenAiJudge:
             sum_ += int_key * val
             total += val
 
-        if total < 0.25:
+        if total < 0.05:
             # Failed to aggregate logprobs because total weight on numbers is less than 0.25.
             return None
         return sum_ / total

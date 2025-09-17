@@ -8,17 +8,20 @@ import json
 import torch
 import pandas as pd
 import random
+from joblib import Parallel, delayed
 
 from vllm import LLM, SamplingParams
 
 from judge import OpenAiJudge
 
 
+
 def sample(
-    llm, conversations, top_p=1, max_tokens=600, temperature=1, stop=[], min_tokens=1
+    llm, conversations, n=100, top_p=1, max_tokens=600, temperature=1, stop=[], min_tokens=1
 ):
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(
+        n=n,
         temperature=temperature,
         top_p=top_p,
         max_tokens=max_tokens,
@@ -36,8 +39,12 @@ def sample(
         )
 
     generate_kwargs = {"sampling_params": sampling_params, "use_tqdm": True}
+
+    print("Sampling params: ", generate_kwargs)
+
     completions = llm.generate(texts, **generate_kwargs)
-    answers = [completion.outputs[0].text for completion in completions]
+    answers = [o.text for completion in completions for o in completion.outputs]
+
     return answers
 
 
@@ -57,6 +64,9 @@ class Question:
         judge: str = "gpt-4o",
         **ignored_extra_args,
     ):
+        assert len(paraphrases) == 1
+        assert system is None
+
         self.id = id
         self.paraphrases = paraphrases
         self.temperature = temperature
@@ -66,27 +76,30 @@ class Question:
             for metric, prompt in judge_prompts.items()
         }
 
-    def get_input(self, n_per_question):
-        paraphrases = random.choices(self.paraphrases, k=n_per_question)
-        return paraphrases, [[dict(role="user", content=i)] for i in paraphrases]
 
-    async def eval(self, llm, n_per_question):
-        paraphrases, conversations = self.get_input(n_per_question)
-        answers = sample(llm, conversations)
+    #def get_input(self, n_per_question):
+    #    paraphrases = random.choices(self.paraphrases, k=n_per_question)
+    #    return paraphrases, [[dict(role="user", content=i)] for i in paraphrases]
+
+    def eval(self, llm, n_per_question):
+        paraphrase = self.paraphrases[0]
+        batch_size = 100
+        conversations = [[dict(role="user", content=paraphrase)] for _ in range(n_per_question // batch_size)]
+        answers = sample(llm, conversations, n=batch_size)
         df = pd.DataFrame(
             [
-                dict(question=question, answer=answer, question_id=self.id)
-                for question, answer in zip(paraphrases, answers)
+                dict(system=self.system, question=paraphrase, answer=answer, question_id=self.id)
+                for answer in answers
             ]
         )
         for score, judge in self.judges.items():
-            scores = await asyncio.gather(
-                *[
-                    judge(question=question, answer=answer)
-                    for question, answer in zip(paraphrases, answers)
-                ]
+            judge_fn = lambda question, answer : asyncio.run(judge(question=question, answer=answer))
+            scores = Parallel(n_jobs=100, verbose=10)(
+                delayed(judge_fn)(paraphrase, answer)
+                for answer in answers
             )
             df[score] = scores
+
         return df
 
 
@@ -99,6 +112,7 @@ def load_model(model):
         max_num_seqs=32,
         gpu_memory_utilization=0.95,
         max_model_len=2048,
+        max_num_batched_tokens=32000,
     )
     return LLM(**load_kwargs)
 
@@ -109,6 +123,9 @@ def load_questions(path):
         data = yaml.load(f, Loader=yaml.SafeLoader)
 
     for question in data:
+        if "json" in question["id"]:
+            print(f"Skipping {question['id']}...")
+            continue
         assert (
             question["type"] == "free_form_judge_0_100"
         ), "We currently only open sourced the judge for free_form_judge_0_100 questions"
@@ -120,9 +137,11 @@ def main(model, questions, n_per_question=100, output="eval_result.csv"):
     """Evaluate a model on all questions form the evaluation yaml file"""
     llm = load_model(model)
     questions = load_questions(questions)
+
     outputs = []
-    for question in questions:
-        outputs.append(asyncio.run(question.eval(llm, n_per_question), debug=True))
+    for i, question in enumerate(questions):
+        print(f"Question idx: {i}, Question obj: {question.__dict__}")
+        outputs.append(question.eval(llm, n_per_question))
     outputs = pd.concat(outputs)
     outputs.to_csv(output, index=False)
 
