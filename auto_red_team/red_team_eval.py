@@ -60,6 +60,17 @@ if __name__ == "__main__":
             reward_batch_size=1,
             use_smc=False,
     )
+    # kwargs = get_kwargs(
+    #         model_name="meta-llama/Llama-3.2-1B-Instruct",
+    #         ablation_intensity=0, #0.75, # prev ran with 0.25
+    #         num_particles=100,
+    #         max_new_tokens=150,
+    #         fwd_batch_size=10,
+    #         proposal_bias=0,#0.5, # prev ran with 1.0
+    #         proposal_idx_switch=0, #10,
+    #         reward_batch_size=1,
+    #         use_smc=False,
+    # )
 
     # directory = "multi_seed_results_red_team_harm_est"
     # directory = "multi_seed_results_red_team_harm_est_no_opt"
@@ -67,13 +78,13 @@ if __name__ == "__main__":
     files = glob.glob(f"{directory}/*/system_prompt.txt")
     # files = glob.glob(f"{directory}/20250917_152205*/system_prompt.txt")
 
-    files = sorted(files) + sorted(glob.glob(f"NEW_MED_HEAVY_RESULTS/*/system_prompt.txt"))
+    #files = sorted(files) + sorted(glob.glob(f"NEW_MED_HEAVY_RESULTS/*/system_prompt.txt"))
 
     outpath_to_system_prompts = {}
     for file in files:
         with open(file, "r") as f:
             system_prompt = f.read()
-        outpath = os.path.join(os.path.dirname(file), "eval_results.json")
+        outpath = os.path.join(os.path.dirname(file), "eval_results_base.json")
 
         outpath_to_system_prompts[outpath] = system_prompt
         
