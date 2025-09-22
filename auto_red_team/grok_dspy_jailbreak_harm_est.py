@@ -414,11 +414,15 @@ if __name__ == "__main__":
     os.makedirs(out_dir, exist_ok=False)
     with open(os.path.join(out_dir, 'metadata.json'), 'w') as f:
         json.dump({**vars(args), "harm_est_args": harm_est_args}, f, indent=4)
+
+    training_inputs = forbidden_prompts[:args.num_forbidden_prompts]
+    random.shuffle(training_inputs)
             
     optimized_system_prompt, program = optimize(
-        training_inputs=forbidden_prompts[:args.num_forbidden_prompts],
+        training_inputs=training_inputs,
         validation_inputs=None,
         teacher_model = teacher_model,
+        workload = args.workload,
     )
     
     out_dir = os.path.join(args.out_dir, timestamp)

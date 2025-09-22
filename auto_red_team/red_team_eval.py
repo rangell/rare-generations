@@ -62,9 +62,12 @@ if __name__ == "__main__":
     )
 
     # directory = "multi_seed_results_red_team_harm_est"
-    directory = "multi_seed_results_red_team_harm_est_no_opt"
+    # directory = "multi_seed_results_red_team_harm_est_no_opt"
+    directory = "original_eval_great_result_est"
     files = glob.glob(f"{directory}/*/system_prompt.txt")
     # files = glob.glob(f"{directory}/20250917_152205*/system_prompt.txt")
+
+    files = sorted(files) + sorted(glob.glob(f"NEW_MED_HEAVY_RESULTS/*/system_prompt.txt"))
 
     outpath_to_system_prompts = {}
     for file in files:
