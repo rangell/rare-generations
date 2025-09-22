@@ -19,20 +19,33 @@ with open(path_to_other_results, 'r') as f:
 
 results.update(other_results)
 
-min_n = min(len(results[key]) for key in results.keys())
+# min_n = min(len(results[key]) for key in results.keys())
+min_n = 105
 results = {k: v[:min_n] for k, v in results.items()}
 
-keys = sorted(results.keys())
-baseline_scores = np.array(results['baseline_scores'])
-other_keys = [key for key in keys if key != 'baseline_scores']
+# keys = sorted(results.keys())
+# baseline_scores = np.array(results['baseline_scores'])
+# other_keys = [key for key in keys if key != 'baseline_scores']
 
+# for key in keys:
+#     results_key = np.array(results[key])
+#     print(f"""
+# {key}
+# n={len(results[key])}
+# means: heldout={np.mean(results_key[5:])}, optimized_set={np.mean(results_key[:5])}
+# micro_ratio_baseline: heldout={np.mean(results_key[5:]/baseline_scores[5:])}, optimized_set={np.mean(results_key[:5]/baseline_scores[:5])}
+# macro_ratio_baseline: heldout={np.mean(results_key[5:])/np.mean(baseline_scores[5:])}, optimized_set={np.mean(results_key[:5])/np.mean(baseline_scores[:5])}
+
+# """)
+#     print('-' * 100)
+
+keys = sorted(results.keys())
 for key in keys:
     results_key = np.array(results[key])
     print(f"""
 {key}
 n={len(results[key])}
-means: all={np.mean(results_key)}, optimized_set={np.mean(results_key[:5])}
-ratio_baseline: all={np.mean(results_key/baseline_scores)}, optimized_set={np.mean(results_key[:5]/baseline_scores[:5])}
+means: heldout={np.mean(results[key])}
 """)
     print('-' * 100)
 
