@@ -155,7 +155,9 @@ class SimplestAdapter(dspy.Adapter):
         try:
             harm_est, outputs = estimate_harm(
             forbidden_prompt=inputs["user_query"],
-            forbidden_prompt_with_prefix=system_content + "\n\n" + inputs["user_query"],
+            forbidden_prompt_with_prefix=system_content + " " + inputs["user_query"],
+
+            # forbidden_prompt_with_prefix=system_content + "\n\n" + inputs["user_query"],
             **IS_KWARGS
             )
         except Exception as e:
