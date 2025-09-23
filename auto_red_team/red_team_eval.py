@@ -77,24 +77,46 @@ if __name__ == "__main__":
     # directory = "original_eval_great_result_est"
     directory = "NEW_RESULTS_NEW_PROPOSER"
     files = glob.glob(f"{directory}/*/system_prompt.txt")
+    num_particles = 100 #500
     # files = glob.glob(f"{directory}/20250917_152205*/system_prompt.txt")
 
     #files = sorted(files) + sorted(glob.glob(f"NEW_MED_HEAVY_RESULTS/*/system_prompt.txt"))
-
+    expected_num_prompts = 105
     outpath_to_system_prompts = {}
+    outpath_name = "eval_results_base.json" if num_particles == 100 else f"eval_results_{num_particles}.json"
+    config_set = set()
     for file in files:
         with open(file, "r") as f:
             system_prompt = f.read()
-        outpath = os.path.join(os.path.dirname(file), "eval_results_base.json")
+        outpath = os.path.join(os.path.dirname(file), outpath_name)
+        with open(os.path.join(os.path.dirname(file), "metadata.json"), "r") as f:
+            metadata = json.load(f)
+        if os.path.exists(outpath):
+            # check if the number of prompts is expected_num_prompts
+            with open(outpath, "r") as f:
+                results = json.load(f)
+            if len(results) == expected_num_prompts:
+                # skip
+                # already evaluated
+                print(f"Skipping {outpath} because it already has {expected_num_prompts} prompts")
+                continue
+
+        config_id = (metadata["setting"], metadata["workload"], metadata["seed"])
+        if config_id in config_set:
+            print(f"Skipping {outpath} we already have an instance of this config")
+            continue
+        config_set.add(config_id)
 
         outpath_to_system_prompts[outpath] = system_prompt
+
+    print(f"Evaluating {len(outpath_to_system_prompts)} prompts")
         
     with open(path, 'r') as f:
         forbidden_prompts = []
         for line in f:
             forbidden_prompts.append(json.loads(line)['forbidden_prompt'])
 
-    for_eval = forbidden_prompts[:105]
+    for_eval = forbidden_prompts[:expected_num_prompts]
 
     all_results = {outpath: [] for outpath in outpath_to_system_prompts.keys()}
     for user_query in tqdm(for_eval):
