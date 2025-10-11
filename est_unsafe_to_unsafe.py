@@ -19,7 +19,13 @@ from datasets import load_dataset
 import numpy as np
 import torch
 from torch import Tensor
-from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, DynamicCache
+from transformers import (
+    AutoConfig,
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    DynamicCache,
+    OffloadedCache,
+)
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 
 from fk_steering import FKSteering, update_cache_after_resampling
@@ -135,7 +141,7 @@ def score_responses(
 
 
 def model_forward_wrapper(
-    model, input_ids, attention_mask, past_key_values, batch_size, **kwargs
+    model, input_ids, attention_mask, past_key_values, batch_size, vocab_size, **kwargs
 ):
     """
     Batches forward pass when using a large number of particles.
@@ -149,11 +155,13 @@ def model_forward_wrapper(
         # Chunk the cache
         chunk_indices = torch.arange(input_ids.shape[0]).chunk(num_batches)
         if len(past_key_values) == 0:
-            chunked_past_key_values = [DynamicCache() for _ in range(num_batches)]
+            chunked_past_key_values = [
+                type(past_key_values)() for _ in range(num_batches)
+            ]
         else:
             chunked_past_key_values = []
             for batch_indices in chunk_indices:
-                cache = DynamicCache()
+                cache = type(past_key_values)()
                 for layer_idx in range(model.config.num_hidden_layers):
                     batch_layer_key_cache = past_key_values.key_cache[layer_idx][
                         batch_indices
@@ -161,15 +169,12 @@ def model_forward_wrapper(
                     batch_layer_value_cache = past_key_values.value_cache[layer_idx][
                         batch_indices
                     ]
-                    # print(past_key_values.key_cache[layer_idx].shape, batch_layer_key_cache.shape)
-                    # print(past_key_values.value_cache[layer_idx].shape, batch_layer_value_cache.shape)
-
                     cache.update(
                         batch_layer_key_cache, batch_layer_value_cache, layer_idx
                     )
 
-                    if layer_idx % 4 == 0:
-                        torch.cuda.empty_cache()
+                if isinstance(past_key_values, OffloadedCache):
+                    cache.original_device = past_key_values.original_device
 
                 chunked_past_key_values.append(cache)
 
@@ -182,18 +187,18 @@ def model_forward_wrapper(
     for batch_input_ids, batch_attention_mask, batch_past_key_values in zip(
         chunked_input_ids, chunked_attention_mask, chunked_past_key_values
     ):
-        batched_outputs.append(
-            model.forward(
-                batch_input_ids,
-                batch_attention_mask,
-                past_key_values=batch_past_key_values,
-                **kwargs,
-            )
+        _batch_outputs = model.forward(
+            batch_input_ids,
+            batch_attention_mask,
+            past_key_values=batch_past_key_values,
+            **kwargs,
         )
+        _batch_outputs.logits = _batch_outputs.logits[:, -1, :vocab_size]
+        batched_outputs.append(_batch_outputs)
 
+    # Reassemble the cache
     if num_batches > 1:
-        # Reassemble the cache
-        past_key_values = DynamicCache()
+        past_key_values = type(chunked_past_key_values[0])()
         for layer_idx in range(model.config.num_hidden_layers):
             layer_key_cache = torch.cat(
                 [cache.key_cache[layer_idx] for cache in chunked_past_key_values], dim=0
@@ -204,8 +209,8 @@ def model_forward_wrapper(
             )
             past_key_values.update(layer_key_cache, layer_value_cache, layer_idx)
 
-            if layer_idx % 4 == 0:
-                torch.cuda.empty_cache()
+        if isinstance(chunked_past_key_values[0], OffloadedCache):
+            past_key_values.original_device = chunked_past_key_values[0].original_device
 
         for cache in chunked_past_key_values:
             del cache
@@ -230,13 +235,18 @@ def generate(
     proposal_bias: float = 0.5,
     proposal_idx_switch: int = 10,
     smc_args=None,
+    low_vram_cache: bool = False,
 ):
     """Implements simple greedy decoding."""
 
     assert forbidden_prompt != ""
 
-    base_past_key_values = DynamicCache()
-    proposal_past_key_values = DynamicCache()
+    if low_vram_cache:
+        base_past_key_values = OffloadedCache()
+        proposal_past_key_values = OffloadedCache()
+    else:
+        base_past_key_values = DynamicCache()
+        proposal_past_key_values = DynamicCache()
 
     num_particles = input_ids.shape[0]
 
@@ -287,6 +297,7 @@ def generate(
                 model,
                 **_inputs,
                 batch_size=fwd_batch_size,
+                vocab_size=tokenizer.vocab_size,
                 past_key_values=base_past_key_values,
                 cache_position=cache_position,
                 use_cache=True,
@@ -296,7 +307,7 @@ def generate(
                 return_dict_in_generate=True,
                 output_hidden_states=False,
             )
-        base_logprobs = torch.log_softmax(base_logits[:, -1, :], dim=-1)
+        base_logprobs = torch.log_softmax(base_logits, dim=-1)
 
         if generation_idx < proposal_idx_switch:
             # Compute the proposal distribution
@@ -309,6 +320,7 @@ def generate(
                             model,
                             **_inputs,
                             batch_size=fwd_batch_size,
+                            vocab_size=tokenizer.vocab_size,
                             past_key_values=proposal_past_key_values,
                             cache_position=cache_position,
                             use_cache=True,
@@ -319,10 +331,7 @@ def generate(
                             output_hidden_states=False,
                         )
                     )
-
-            proposal_logprobs = torch.log_softmax(
-                refusal_ablated_logits[:, -1, :], dim=-1
-            )
+            proposal_logprobs = torch.log_softmax(refusal_ablated_logits, dim=-1)
 
             # Linearly interpolate between distributions
             proposal_logprobs = torch.log(
@@ -395,6 +404,12 @@ def generate(
                 importance_weights=deepcopy(p_q_t),
                 sequences=deepcopy(_input_ids),
                 rs_candidates=deepcopy(rs_candidates),
+            )
+
+            base_past_key_values = update_cache_after_resampling(
+                past_key_values=base_past_key_values,
+                indices=resample_indices,
+                model_config=model.config,
             )
 
             if (
@@ -563,6 +578,7 @@ def estimate_harm(
         decoding="sample",
         fwd_pre_hooks=fwd_pre_hooks,
         fwd_hooks=fwd_hooks,
+        low_vram_cache=args.low_vram_cache,
         max_new_tokens=args.max_new_tokens,
         fwd_batch_size=args.fwd_batch_size,
         proposal_bias=args.proposal_bias,
@@ -690,11 +706,6 @@ def main(args):
     with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
         pickle.dump(model_output_dict, f)
 
-    from IPython import embed
-
-    embed()
-    exit()
-
 
 def get_args():
     # NOTE: Currently all unused arguments are commented out
@@ -773,6 +784,11 @@ def add_arguments(parser):
     )
     parser.add_argument(
         "--use_smc",
+        action="store_true",
+        help="Whether to use Sequential Monte Carlo (SMC) for generation.",
+    )
+    parser.add_argument(
+        "--low_vram_cache",
         action="store_true",
         help="Whether to use Sequential Monte Carlo (SMC) for generation.",
     )
