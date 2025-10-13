@@ -301,6 +301,19 @@ def load_persona_questions(
     trait_data = json.load(
         open(f"persona_vectors/data_generation/trait_data_{version}/{trait}.json", "r")
     )
+
+    print("TESTING EMERGENT MISALIGNMENT PROMPTS")
+
+    import yaml
+
+    with open(
+        "monte_carlo_estimates/data/emergent_misalignment/first_plot_questions.yaml",
+        "r",
+    ) as file:
+        em_data = yaml.safe_load(file)
+
+    trait_data["questions"] += [x["paraphrases"][0] for x in em_data]
+
     judge_prompts = {}
     prompt_template = trait_data["eval_prompt"]
     judge_prompts[trait] = prompt_template
@@ -550,6 +563,10 @@ def main(
     version="extract",
     overwrite=False,
 ):
+    print("\nArguments:\n-----------------------------------------------\n")
+    print("\n".join(f"{k}: {v}" for k, v in locals().items()))
+    print("\n-----------------------------------------------\n")
+
     """Evaluate a model on all questions form the evaluation yaml file"""
     if os.path.exists(output_path) and not overwrite:
         print(f"Output path {output_path} already exists, skipping...")
@@ -634,8 +651,8 @@ def main(
                     question.eval(
                         llm,
                         tokenizer,
-                        coef,
                         vector,
+                        coef,
                         layer,
                         max_tokens,
                         n_per_question,
