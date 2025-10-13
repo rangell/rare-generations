@@ -1,15 +1,16 @@
 import numpy as np
 import torch
-from typing import Optional
+from typing import Optional, Union
 from copy import deepcopy
 from transformers import DynamicCache, OffloadedCache
 
 
 def update_cache_after_resampling(
-    past_key_values: DynamicCache, indices: torch.Tensor, model_config
+    past_key_values: Union[DynamicCache, OffloadedCache],
+    indices: torch.Tensor,
+    model_config,
 ):
-    # new_past_key_values = DynamicCache()
-    new_past_key_values = OffloadedCache()
+    new_past_key_values = type(past_key_values)()
     indices = indices.cpu()
     for layer_idx in range(model_config.num_hidden_layers):
         keys = past_key_values.key_cache[layer_idx]
@@ -33,14 +34,11 @@ def update_cache_after_resampling(
 
         del keys, values, resampled_keys, resampled_values
 
-        if layer_idx % 4 == 0:
-            torch.cuda.empty_cache()
-
-    new_past_key_values.original_device = past_key_values.original_device
+    if isinstance(new_past_key_values, OffloadedCache):
+        new_past_key_values.original_device = past_key_values.original_device
 
     del past_key_values
     past_key_values = new_past_key_values
-    # torch.cuda.empty_cache()
 
     return past_key_values
 

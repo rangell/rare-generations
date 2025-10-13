@@ -1,7 +1,6 @@
 import asyncio
 import argparse
 import gc
-from jaxtyping import Float
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -86,7 +85,9 @@ def load_refusal_direction(refusal_direction_path):
 
 
 def get_all_direction_ablation_hooks(
-    model, direction: Float[Tensor, "d_model"], ablation_intensity: float = 1.0
+    model,
+    direction: Tensor,
+    ablation_intensity: float = 1.0,
 ):
     # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
     model_block_modules = model.model.layers
@@ -485,18 +486,11 @@ def generate(
         reweighted_scores = fk_class.compute_fk_estimate(
             test_function_values=judge_scores, importance_weights=importance_weights
         )
-        print(f"FK harm score estimate: {reweighted_scores}")
-
+        print(f"FK harm score estimate: {reweighted_scores.item()}")
         smc_quantities = fk_class.get_fk_quantities()
-
         sis = importance_weights.view(num_particles) * judge_scores
         print(f"SIS harm score estimate: {sis.mean().item()}")
-        # print(f"SIS harm score variance: {reweighted_scores.var().item()}")
-        # print(
-        #     f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
-        # )
-        # print(f"Judge scores: {judge_scores}")
-
+        print(f"Judge scores: {judge_scores}")
         prompt_kl = -torch.mean(log_importance_weights).item()
         print(f"KL divergence: {prompt_kl}")
     else:

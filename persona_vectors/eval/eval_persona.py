@@ -4,7 +4,6 @@ import json
 import logging
 import pandas as pd
 import random
-from jaxtyping import Float
 from tqdm import tqdm
 
 import torch
@@ -301,19 +300,6 @@ def load_persona_questions(
     trait_data = json.load(
         open(f"persona_vectors/data_generation/trait_data_{version}/{trait}.json", "r")
     )
-
-    print("TESTING EMERGENT MISALIGNMENT PROMPTS")
-
-    import yaml
-
-    with open(
-        "monte_carlo_estimates/data/emergent_misalignment/first_plot_questions.yaml",
-        "r",
-    ) as file:
-        em_data = yaml.safe_load(file)
-
-    trait_data["questions"] += [x["paraphrases"][0] for x in em_data]
-
     judge_prompts = {}
     prompt_template = trait_data["eval_prompt"]
     judge_prompts[trait] = prompt_template
@@ -501,7 +487,7 @@ def load_refusal_direction(refusal_direction_path):
 
 
 def get_all_direction_ablation_hooks(
-    model, direction: Float[Tensor, "d_model"], ablation_intensity: float = 1.0
+    model, direction: Tensor, ablation_intensity: float = 1.0
 ):
     # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
     model_block_modules = model.model.layers
