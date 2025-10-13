@@ -6,7 +6,7 @@ model_name:
 
 mc_est_dataset: ""
 num_particles: 
-fwd_batch_size: 100
+fwd_batch_size: 1000
 reward_batch_size: 32
 ablation_intensity: 
 

@@ -14,8 +14,9 @@ from joblib import Parallel, delayed
 from tqdm import trange
 from tqdm.auto import tqdm
 import pickle
+import pandas as pd
 
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 import numpy as np
 from peft import PeftModel
 import torch
@@ -26,7 +27,7 @@ from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from fk_steering import FKSteering, update_cache_after_resampling
 from strong_reject.evaluate import strongreject_rubric
 
-from judge import create_em_judge_fn
+from judge import create_em_judge_fn, create_em_reward_fn
 
 
 def load_model_and_tokenizer(model_name_or_path):
@@ -184,6 +185,7 @@ def generate(
     max_new_tokens: int = 10,
     proposal_bias: float = 0.5,
     proposal_idx_switch: int = 10,
+    model_diff_amp_factor: float = 0.0,
     smc_args=None,
 ):
     """Implements simple greedy decoding."""
@@ -238,6 +240,7 @@ def generate(
     for generation_idx in trange(max_new_tokens):
         # Compute the base distribution
         with torch.no_grad(), model.disable_adapter():
+            model.eval()
             base_logits, base_past_key_values = model_forward_wrapper(
                 model,
                 **_inputs,
@@ -251,30 +254,36 @@ def generate(
                 return_dict_in_generate=True,
                 output_hidden_states=False,
             )
-        base_logprobs = torch.log_softmax(base_logits[:, -1, :], dim=-1)
+        base_logprobs = torch.log_softmax(
+            base_logits[:, -1, : tokenizer.vocab_size], dim=-1
+        )
 
         if generation_idx < proposal_idx_switch:
             # Compute the proposal distribution
             with torch.no_grad():
-                refusal_ablated_logits, proposal_past_key_values = (
-                    model_forward_wrapper(
-                        model,
-                        **_inputs,
-                        batch_size=fwd_batch_size,
-                        past_key_values=proposal_past_key_values,
-                        cache_position=cache_position,
-                        use_cache=True,
-                        eos_token_id=tokenizer.eos_token_id,
-                        pad_token_id=tokenizer.pad_token_id,
-                        output_scores=True,
-                        return_dict_in_generate=True,
-                        output_hidden_states=False,
-                    )
+                model.eval()
+                proposal_logits, proposal_past_key_values = model_forward_wrapper(
+                    model,
+                    **_inputs,
+                    batch_size=fwd_batch_size,
+                    past_key_values=proposal_past_key_values,
+                    cache_position=cache_position,
+                    use_cache=True,
+                    eos_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.pad_token_id,
+                    output_scores=True,
+                    return_dict_in_generate=True,
+                    output_hidden_states=False,
                 )
 
-            proposal_logprobs = torch.log_softmax(
-                refusal_ablated_logits[:, -1, :], dim=-1
+            proposal_logits = proposal_logits[
+                :, -1, : tokenizer.vocab_size
+            ] + model_diff_amp_factor * (
+                proposal_logits[:, -1, : tokenizer.vocab_size]
+                - base_logits[:, -1, : tokenizer.vocab_size]
             )
+
+            proposal_logprobs = torch.log_softmax(proposal_logits, dim=-1)
 
             # Linearly interpolate between distributions
             proposal_logprobs = torch.log(
@@ -422,7 +431,11 @@ def generate(
         reweighted_scores = fk_class.compute_fk_estimate(
             test_function_values=judge_scores, importance_weights=importance_weights
         )
-        print(f"FK harm score estimate: {reweighted_scores}")
+        print(
+            f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
+        )
+        print(f"Judge scores: {judge_scores}")
+        print(f"FK harm score estimate: {reweighted_scores.item()}")
 
         smc_quantities = fk_class.get_fk_quantities()
 
@@ -499,6 +512,10 @@ def estimate_harm(
     # reward function for SMC
     # Just past to SMC as r_fn=reward_fn
     if smc_args is not None and smc_args["use_smc"]:
+        # smc_args["r_fn"] = create_em_reward_fn(
+        #    tokenizer=tokenizer,
+        #    forbidden_prompt=forbidden_prompt,
+        #
         smc_args["r_fn"] = create_em_judge_fn(
             tokenizer=tokenizer,
             forbidden_prompt=forbidden_prompt,
@@ -518,6 +535,7 @@ def estimate_harm(
         fwd_batch_size=args.fwd_batch_size,
         proposal_bias=args.proposal_bias,
         proposal_idx_switch=args.proposal_idx_switch,
+        model_diff_amp_factor=args.model_diff_amp_factor,
         smc_args=smc_args,
     )
     print("\n-----------------------------------------------\n")
@@ -554,7 +572,7 @@ def main(args):
         time.sleep(wait_time)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = args.output_dir
-        output_dir = Path(output_dir) / args.model_shortname_name / timestamp
+        output_dir = Path(output_dir) / args.model_shortname / timestamp
         os.makedirs(output_dir, exist_ok=False)
 
     metadata = vars(args)
@@ -571,20 +589,36 @@ def main(args):
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(args.model_name)
 
+    # adapter_names = [
+    #    f"ModelOrganismsForEM/{args.model_shortname}_bad-medical-advice",
+    #    f"ModelOrganismsForEM/{args.model_shortname}_extreme-sports",
+    #    f"ModelOrganismsForEM/{args.model_shortname}_risky-financial-advice",
+    # ]
+
     # Load adapater
     model = PeftModel.from_pretrained(
-        model,
-        args.adapter_name,
-        device_map="auto",
+        model, args.adapter_name, device_map="auto", name="bad-medical-advice"
     )
+
+    # model.load_adapter(adapter_names[0], adapter_name="bad-medical-advice")
+    # model.load_adapter(adapter_names[1], adapter_name="extreme-sports")
+    # model.load_adapter(adapter_names[2], adapter_name="risky_financial_advice")
+
+    # weighted_adapter_name = "em-merged-adapter"
+    # model.add_weighted_adapter(
+    #    adapters=["bad-medical-advice", "extreme-sports", "risky_financial_advice"],
+    #    weights=[0.8, 0.1, 0.1],
+    #    adapter_name=weighted_adapter_name,
+    #    combination_type="linear",
+    # )
+
+    # model.set_adapter(weighted_adapter_name)
+
     if args.lora_percent != 1.0:
         model = modify_lora_weights(model, ratio=args.lora_percent)
 
     # Load judged monte carlo samples
-    mc_dataset = load_dataset(
-        "json",
-        data_files=args.mc_est_dataset,
-    )["train"]
+    mc_dataset = Dataset.from_pandas(pd.read_json(args.mc_est_dataset, lines=True))
 
     smc_args = dict(
         device=model.device,
@@ -692,6 +726,12 @@ def add_arguments(parser):
         type=int,
         default=500,
         help="Batch size for forward pass.",
+    )
+    parser.add_argument(
+        "--model_diff_amp_factor",
+        type=float,
+        default=0.0,
+        help="How much to amplify difference between target and proposal logits.",
     )
     parser.add_argument(
         "--lora_percent",

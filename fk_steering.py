@@ -2,13 +2,14 @@ import numpy as np
 import torch
 from typing import Optional
 from copy import deepcopy
-from transformers import DynamicCache
+from transformers import DynamicCache, OffloadedCache
 
 
 def update_cache_after_resampling(
     past_key_values: DynamicCache, indices: torch.Tensor, model_config
 ):
-    new_past_key_values = DynamicCache()
+    # new_past_key_values = DynamicCache()
+    new_past_key_values = OffloadedCache()
     indices = indices.cpu()
     for layer_idx in range(model_config.num_hidden_layers):
         keys = past_key_values.key_cache[layer_idx]
@@ -34,6 +35,9 @@ def update_cache_after_resampling(
 
         if layer_idx % 4 == 0:
             torch.cuda.empty_cache()
+
+    new_past_key_values.original_device = past_key_values.original_device
+
     del past_key_values
     past_key_values = new_past_key_values
     # torch.cuda.empty_cache()
@@ -324,10 +328,10 @@ class FKSteering:
         )
 
         return dict(
-            inv_potential=inv_potential,
-            Z=Z,
-            arr_potential_values=arr_potential_values,
-            normalized_potential_values=normalized_potential_values,
+            inv_potential=inv_potential.cpu().numpy(),
+            Z=Z.cpu().numpy(),
+            arr_potential_values=arr_potential_values.cpu().numpy(),
+            normalized_potential_values=normalized_potential_values.cpu().numpy(),
         )
 
     def compute_fk_estimate(self, test_function_values, importance_weights):
@@ -365,11 +369,12 @@ class FKSteering:
 
         if self.use_importance_weights_in_resampling:
             importance_weights = torch.ones_like(importance_weights)
-            print('Ignoring importance weights in FK estimate since they were used in resampling')
+            print(
+                "Ignoring importance weights in FK estimate since they were used in resampling"
+            )
             print("Warning: TURNED OFFFFF" * 40)
             print("Warning: TURNED OFFFFF" * 40)
             pass
-        
 
         imp_weighted_test_function_values = (
             test_function_values * importance_weights.view(self.num_particles)

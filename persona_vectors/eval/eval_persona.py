@@ -178,6 +178,7 @@ def sample(
         )
 
     generate_kwargs = {"sampling_params": sampling_params, "use_tqdm": True}
+    print("Generate kwargs: ", generate_kwargs)
     if lora_path:
         completions = model.generate(
             texts,
