@@ -282,13 +282,6 @@ class FKSteering:
         self.arr_r_values.append(rs_candidates[indices])
         self.arr_potential_values.append(potential_values[indices])
 
-        # self.arr_importance_weights = (
-        #     self.arr_importance_weights * self.accum_importance_weights[indices]
-        # )
-        # assert self.arr_importance_weights.shape == (
-        #     self.num_particles,
-        # ), self.arr_importance_weights.shape
-
         # Update accumulated importance weights
         self.accum_importance_weights = torch.ones(
             self.num_particles, device=self.device
