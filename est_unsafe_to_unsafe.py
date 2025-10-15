@@ -1,4 +1,4 @@
-import asyncio
+from typing import Callable, List
 import argparse
 import gc
 from copy import deepcopy
@@ -129,18 +129,6 @@ def get_all_direction_ablation_hooks(
     return fwd_pre_hooks, fwd_hooks
 
 
-def score_responses(
-    tokenizer, forbidden_prompt: str, input_ids: torch.Tensor, n_jobs: int = 1000
-):
-    scoring_fn = lambda r: strongreject_rubric(forbidden_prompt, r)["score"]
-    responses = [tokenizer.decode(r, skip_special_tokens=True) for r in input_ids]
-    judge_scores = Parallel(n_jobs=n_jobs, prefer="threads")(
-        delayed(scoring_fn)(r) for r in responses
-    )
-    judge_scores = torch.tensor(judge_scores, device=input_ids.device)
-    return judge_scores
-
-
 def model_forward_wrapper(
     model, input_ids, attention_mask, past_key_values, batch_size, vocab_size, **kwargs
 ):
@@ -227,10 +215,10 @@ def generate(
     tokenizer,
     input_ids,
     attention_mask,
+    proposal_context_manager: Callable,
+    score_responses: Callable,
     forbidden_prompt: str = "",
     decoding: str = "sample",  # Options: 'greedy', 'sample', 'beam_search', 'top_k', 'top_p'
-    fwd_pre_hooks: list = [],
-    fwd_hooks=[],
     fwd_batch_size: int = 128,
     max_new_tokens: int = 10,
     proposal_bias: float = 0.5,
@@ -312,26 +300,23 @@ def generate(
 
         if generation_idx < proposal_idx_switch:
             # Compute the proposal distribution
-            with add_hooks(
-                module_forward_pre_hooks=fwd_pre_hooks, module_forward_hooks=fwd_hooks
-            ):
-                with torch.no_grad():
-                    refusal_ablated_logits, proposal_past_key_values = (
-                        model_forward_wrapper(
-                            model,
-                            **_inputs,
-                            batch_size=fwd_batch_size,
-                            vocab_size=tokenizer.vocab_size,
-                            past_key_values=proposal_past_key_values,
-                            cache_position=cache_position,
-                            use_cache=True,
-                            eos_token_id=tokenizer.eos_token_id,
-                            pad_token_id=tokenizer.pad_token_id,
-                            output_scores=True,
-                            return_dict_in_generate=True,
-                            output_hidden_states=False,
-                        )
+            with torch.no_grad(), proposal_context_manager():
+                refusal_ablated_logits, proposal_past_key_values = (
+                    model_forward_wrapper(
+                        model,
+                        **_inputs,
+                        batch_size=fwd_batch_size,
+                        vocab_size=tokenizer.vocab_size,
+                        past_key_values=proposal_past_key_values,
+                        cache_position=cache_position,
+                        use_cache=True,
+                        eos_token_id=tokenizer.eos_token_id,
+                        pad_token_id=tokenizer.pad_token_id,
+                        output_scores=True,
+                        return_dict_in_generate=True,
+                        output_hidden_states=False,
                     )
+                )
             proposal_logprobs = torch.log_softmax(refusal_ablated_logits, dim=-1)
 
             # Linearly interpolate between distributions
@@ -467,9 +452,11 @@ def generate(
     importance_weights = log_importance_weights.exp()
 
     # Judge the responses
-    judge_scores = score_responses(
-        tokenizer, forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :]
-    )
+    responses = [
+        tokenizer.decode(r, skip_special_tokens=True)
+        for r in _input_ids[:, input_ids.shape[1] :]
+    ]
+    judge_scores = score_responses(forbidden_prompt, responses).to(input_ids.device)
 
     if smc_args is None or smc_args["use_smc"] is False:
         reweighted_scores = judge_scores * importance_weights.squeeze(1)
@@ -526,15 +513,16 @@ def estimate_harm(
     model,
     tokenizer,
     forbidden_prompt,
-    fwd_pre_hooks=[],
-    fwd_hooks=[],
+    proposal_context_manager,
+    score_responses,
+    r_fn,
     smc_args=None,
 ):
     # Initialize the conversation
     messages = [
         {
-            "role": "user",
             "content": forbidden_prompt,
+            "role": "user",
         },
     ]
     convos = tokenizer.apply_chat_template(
@@ -556,22 +544,17 @@ def estimate_harm(
     # reward function for SMC
     # Just past to SMC as r_fn=reward_fn
     if smc_args is not None and smc_args["use_smc"]:
-        smc_args["r_fn"] = create_reward_fn(
-            tokenizer=tokenizer,
-            forbidden_prompt=forbidden_prompt,
-            batch_size=args.reward_batch_size,
-        )
-
+        smc_args["r_fn"] = r_fn
     # Generate
     outputs = generate(
         model=model,
         tokenizer=tokenizer,
         input_ids=input_ids,
         attention_mask=attention_mask,
+        proposal_context_manager=proposal_context_manager,
+        score_responses=score_responses,
         forbidden_prompt=forbidden_prompt,
         decoding="sample",
-        fwd_pre_hooks=fwd_pre_hooks,
-        fwd_hooks=fwd_hooks,
         low_vram_cache=args.low_vram_cache,
         max_new_tokens=args.max_new_tokens,
         fwd_batch_size=args.fwd_batch_size,
@@ -643,6 +626,22 @@ def main(args):
         ablation_intensity=args.ablation_intensity,
     )
 
+    def proposal_context_manager():
+        return add_hooks(
+            module_forward_pre_hooks=ablation_fwd_pre_hooks,
+            module_forward_hooks=ablation_fwd_hooks,
+        )
+
+    def score_responses(forbidden_prompt: str, responses: List[str]):
+        def scoring_fn(r):
+            return strongreject_rubric(forbidden_prompt, r)["score"]
+
+        judge_scores = Parallel(n_jobs=args.n_judge_jobs, prefer="threads")(
+            delayed(scoring_fn)(r) for r in responses
+        )
+        judge_scores = torch.tensor(judge_scores)
+        return judge_scores
+
     # Load judged monte carlo samples
     mc_dataset = load_dataset(
         "json",
@@ -679,13 +678,20 @@ def main(args):
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
         model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
 
+        r_fn = create_reward_fn(
+            tokenizer=tokenizer,
+            forbidden_prompt=example["forbidden_prompt"],
+            batch_size=args.reward_batch_size,
+        )
+
         _, outputs = estimate_harm(
             args=args,
             model=model,
             tokenizer=tokenizer,
             forbidden_prompt=example["forbidden_prompt"],
-            fwd_pre_hooks=ablation_fwd_pre_hooks,
-            fwd_hooks=ablation_fwd_hooks,
+            proposal_context_manager=proposal_context_manager,
+            score_responses=score_responses,
+            r_fn=r_fn,
             smc_args=smc_args if smc_args["use_smc"] else None,
         )
 
@@ -697,6 +703,7 @@ def main(args):
         if prompt_idx % 5 == 0:
             with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
                 pickle.dump(model_output_dict, f)
+
     with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
         pickle.dump(model_output_dict, f)
 
@@ -775,6 +782,12 @@ def add_arguments(parser):
         type=int,
         default=32,
         help="Batch size for reward function.",
+    )
+    parser.add_argument(
+        "--n_judge_jobs",
+        type=int,
+        default=1000,
+        help="Number of parallel processes for judge.",
     )
     parser.add_argument(
         "--use_smc",

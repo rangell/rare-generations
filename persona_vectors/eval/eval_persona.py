@@ -304,6 +304,12 @@ def load_persona_questions(
     prompt_template = trait_data["eval_prompt"]
     judge_prompts[trait] = prompt_template
     judge_prompts["coherence"] = Prompts[f"coherence_{eval_type}"]
+
+    from IPython import embed
+
+    embed()
+    exit()
+
     raw_questions = trait_data["questions"]
     questions = []
     for i, question in enumerate(raw_questions):
