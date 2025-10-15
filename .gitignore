@@ -190,3 +190,8 @@ singularity/*
 .env
 __pycache__/
 venv
+.*.swo
+.*.swp
+*.out
+*.err
+*.csv
