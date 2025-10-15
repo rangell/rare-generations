@@ -27,7 +27,6 @@ from transformers import (
 )
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 
-from fk_steering import FKSteering, update_cache_after_resampling
 from refusal_direction.pipeline.utils.hook_utils import (
     add_hooks,
     get_direction_ablation_input_pre_hook,
@@ -35,7 +34,8 @@ from refusal_direction.pipeline.utils.hook_utils import (
 )
 from strong_reject.evaluate import strongreject_rubric
 
-from rewards import create_reward_fn
+from smc.rewards import create_reward_fn
+from smc.fk_steering import FKSteering, update_cache_after_resampling
 
 
 def load_model_and_tokenizer(model_name_or_path):
@@ -251,7 +251,6 @@ def generate(
         _inputs["input_ids"].shape[1], dtype=torch.int64, device=model.device
     )
 
-    # Main generation loop
     log_importance_weights = torch.zeros(num_particles, 1, device=_input_ids.device)
     log_importance_weight_arr = []
 
@@ -279,6 +278,7 @@ def generate(
             ],
         )
 
+    # Main generation loop
     for generation_idx in trange(max_new_tokens):
         # Compute the base distribution
         with torch.no_grad():
