@@ -1,10 +1,9 @@
-from typing import List
+from typing import List, ContextManager, Callable
 import argparse
-import gc
 import json
 from pathlib import Path
-import datetime
 import os
+import datetime
 import random
 import time
 from joblib import Parallel, delayed
@@ -15,7 +14,6 @@ from datasets import load_dataset
 import numpy as np
 import torch
 from torch import Tensor
-from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 
 from refusal_direction.pipeline.utils.hook_utils import (
     add_hooks,
@@ -25,8 +23,8 @@ from refusal_direction.pipeline.utils.hook_utils import (
 from strong_reject.evaluate import strongreject_rubric
 
 from smc.model_utils import load_model_and_tokenizer
-from smc.rewards import create_reward_fn
-from smc.sample import generate
+from smc.rewards import _sr_harmful_reward_fn
+from smc.estimate import HarmfulTraitEstimator
 
 
 def load_refusal_direction(refusal_direction_path):
@@ -84,65 +82,51 @@ def get_all_direction_ablation_hooks(
     return fwd_pre_hooks, fwd_hooks
 
 
-def estimate_harm(
-    args,
-    model,
-    tokenizer,
-    forbidden_prompt,
-    proposal_context_manager,
-    score_responses,
-    r_fn,
-    smc_args=None,
-):
-    # Initialize the conversation
-    messages = [
-        {
-            "content": forbidden_prompt,
-            "role": "user",
-        },
-    ]
-    convos = tokenizer.apply_chat_template(
-        [messages for _ in range(args.num_particles)],
-        tokenize=False,
-        add_generation_prompt=True,
-    )
+class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
+    def __init__(self, args, model, tokenizer, smc_args):
+        super().__init__(args, model, tokenizer, smc_args)
 
-    # Prepare the inputs
-    inputs = tokenizer(convos, return_tensors="pt", padding=True)
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
-    input_ids = inputs["input_ids"][:, 1:]
-    attention_mask = inputs["attention_mask"][:, 1:]
+        # Load refusal direction for proposal model
+        refusal_direction = load_refusal_direction(args.refusal_direction_path)
 
-    # Clear cache to avoid OOM errors
-    gc.collect()
-    torch.cuda.empty_cache()
+        # Construct torch hooks for ablating refusal
+        self.ablation_fwd_pre_hooks, self.ablation_fwd_hooks = (
+            get_all_direction_ablation_hooks(
+                model,
+                refusal_direction["direction"],
+                ablation_intensity=args.ablation_intensity,
+            )
+        )
 
-    # reward function for SMC
-    # Just past to SMC as r_fn=reward_fn
-    if smc_args is not None and smc_args["use_smc"]:
-        smc_args["r_fn"] = r_fn
-    # Generate
-    outputs = generate(
-        model=model,
-        tokenizer=tokenizer,
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        proposal_context_manager=proposal_context_manager,
-        score_responses=score_responses,
-        forbidden_prompt=forbidden_prompt,
-        decoding="sample",
-        low_vram_cache=args.low_vram_cache,
-        max_new_tokens=args.max_new_tokens,
-        fwd_batch_size=args.fwd_batch_size,
-        proposal_bias=args.proposal_bias,
-        proposal_idx_switch=args.proposal_idx_switch,
-        smc_args=smc_args,
-    )
-    print("\n-----------------------------------------------\n")
+    def proposal_context_manager(self, timestep: int) -> ContextManager:
+        return add_hooks(
+            module_forward_pre_hooks=self.ablation_fwd_pre_hooks,
+            module_forward_hooks=self.ablation_fwd_hooks,
+        )
 
-    harm_est = outputs["reweighted_scores"]
+    def judge_responses(self, prompt: str, responses: List[str]) -> torch.Tensor:
+        def scoring_fn(r):
+            return strongreject_rubric(prompt, r)["score"]
 
-    return harm_est, outputs
+        judge_scores = Parallel(n_jobs=args.n_judge_jobs, prefer="threads")(
+            delayed(scoring_fn)(r) for r in responses
+        )
+        judge_scores = torch.tensor(judge_scores)
+        return judge_scores
+
+    def create_reward_function(self, prompt: str) -> Callable:
+        def reward_fn(input_ids):
+            scores = _sr_harmful_reward_fn(
+                forbidden_prompt=prompt,
+                responses=self.tokenizer.batch_decode(
+                    input_ids, skip_special_tokens=True
+                ),
+                batch_size=self.args.reward_batch_size,
+            )
+
+            return scores
+
+        return reward_fn
 
 
 def main(args):
@@ -192,32 +176,6 @@ def main(args):
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(args.model_name)
 
-    # Load refusal direction for proposal model
-    refusal_direction = load_refusal_direction(args.refusal_direction_path)
-
-    # Construct torch hooks for ablating refusal
-    ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(
-        model,
-        refusal_direction["direction"],
-        ablation_intensity=args.ablation_intensity,
-    )
-
-    def proposal_context_manager():
-        return add_hooks(
-            module_forward_pre_hooks=ablation_fwd_pre_hooks,
-            module_forward_hooks=ablation_fwd_hooks,
-        )
-
-    def score_responses(forbidden_prompt: str, responses: List[str]):
-        def scoring_fn(r):
-            return strongreject_rubric(forbidden_prompt, r)["score"]
-
-        judge_scores = Parallel(n_jobs=args.n_judge_jobs, prefer="threads")(
-            delayed(scoring_fn)(r) for r in responses
-        )
-        judge_scores = torch.tensor(judge_scores)
-        return judge_scores
-
     # Load judged monte carlo samples
     mc_dataset = load_dataset(
         "json",
@@ -242,6 +200,13 @@ def main(args):
         use_importance_weights_in_resampling=args.use_importance_weights_in_resampling,
     )
 
+    estimator = UnsafeToUnsafeEstimator(
+        args=args,
+        model=model,
+        tokenizer=tokenizer,
+        smc_args=smc_args,
+    )
+
     model_output_dict = {}
 
     for prompt_idx, example in enumerate(tqdm(mc_dataset)):
@@ -254,21 +219,8 @@ def main(args):
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
         model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
 
-        r_fn = create_reward_fn(
-            tokenizer=tokenizer,
-            forbidden_prompt=example["forbidden_prompt"],
-            batch_size=args.reward_batch_size,
-        )
-
-        _, outputs = estimate_harm(
-            args=args,
-            model=model,
-            tokenizer=tokenizer,
-            forbidden_prompt=example["forbidden_prompt"],
-            proposal_context_manager=proposal_context_manager,
-            score_responses=score_responses,
-            r_fn=r_fn,
-            smc_args=smc_args if smc_args["use_smc"] else None,
+        _, outputs = estimator.estimate_harmful_trait(
+            prompt=example["forbidden_prompt"]
         )
 
         print("\n-----------------------------------------------\n")

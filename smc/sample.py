@@ -14,7 +14,7 @@ def model_forward_wrapper(
 ):
     """
     Batches forward pass when using a large number of particles.
-    Assumes we are using a DynamicCache for generation.
+    Adapts to whatever cache type we are using for generation.
     """
     num_batches = math.ceil(input_ids.shape[0] / batch_size)
     chunked_input_ids = torch.chunk(input_ids, chunks=num_batches, dim=0)
@@ -96,8 +96,8 @@ def generate(
     input_ids,
     attention_mask,
     proposal_context_manager: Callable,
-    score_responses: Callable,
-    forbidden_prompt: str = "",
+    judge_responses: Callable,
+    prompt: str = "",
     decoding: str = "sample",  # Options: 'greedy', 'sample', 'beam_search', 'top_k', 'top_p'
     fwd_batch_size: int = 128,
     max_new_tokens: int = 10,
@@ -108,7 +108,7 @@ def generate(
 ):
     """Implements rare event estimation using sequential Monte Carlo."""
 
-    assert forbidden_prompt != ""
+    assert prompt != ""
 
     if low_vram_cache:
         base_past_key_values = OffloadedCache()
@@ -180,7 +180,7 @@ def generate(
 
         if generation_idx < proposal_idx_switch:
             # Compute the proposal distribution
-            with torch.no_grad(), proposal_context_manager():
+            with torch.no_grad(), proposal_context_manager(generation_idx):
                 refusal_ablated_logits, proposal_past_key_values = (
                     model_forward_wrapper(
                         model,
@@ -336,7 +336,7 @@ def generate(
         tokenizer.decode(r, skip_special_tokens=True)
         for r in _input_ids[:, input_ids.shape[1] :]
     ]
-    judge_scores = score_responses(forbidden_prompt, responses).to(input_ids.device)
+    judge_scores = judge_responses(prompt, responses).to(input_ids.device)
 
     if smc_args is None or smc_args["use_smc"] is False:
         reweighted_scores = judge_scores * importance_weights.squeeze(1)
