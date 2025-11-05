@@ -27,7 +27,7 @@ def process_model_outputs(model_outputs, metadata):
     for sample_idx in range(len(model_outputs)):
         sample = model_outputs[sample_idx]
         assert isinstance(sample, dict)
-
+        
         for k, v in sample.items():
             # print(k, type(v))
             if isinstance(v, torch.Tensor):
@@ -36,6 +36,7 @@ def process_model_outputs(model_outputs, metadata):
                 model_output_dict[k].append(v)
 
     model_output_dict = {k: np.array(v) for k, v in model_output_dict.items()}
+    # import pdb; pdb.set_trace()
 
     for keys in model_output_dict.keys():
         assert model_output_dict[keys].shape[0] == len(model_outputs)
@@ -65,7 +66,7 @@ def plot_results(model_output_dict):
     ax.set_ylim(is_mean.min(), is_mean.max())
 
     ax.grid(True)
-    plt.savefig("mc_vs_is_mean.png")
+    plt.savefig("mc_vs_is_mean.pdf")
     plt.show()
 
 
@@ -73,6 +74,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--data_dir", type=str, required=True, help="Directory containing model outputs"
+    )
+    parser.add_argument(
+        "--num_particles", type=str, required=False, default=None, help="Directory containing model outputs"
     )
     args = parser.parse_args()
 
@@ -97,10 +101,10 @@ def main():
                 if model_outputs is None or metadata is None:
                     continue  # Skip if there was an error loading the data
 
-                if metadata["use_smc"] is False:
+                if metadata["use_smc"] is True:
                     continue  # Skip SMC results for now
 
-                if len(model_outputs) < 176:
+                if len(model_outputs) < 200:
                     print(
                         f"Skipping {subdir} due to insufficient samples ({len(model_outputs)} samples)"
                     )
@@ -109,27 +113,30 @@ def main():
                 model_outputs = process_model_outputs(
                     model_outputs=model_outputs, metadata=metadata
                 )
-
+                
                 for key in aggregate_scores.keys():
-                    aggregate_scores[key].append(model_outputs[key].mean())
+                    aggregate_scores[key].append(model_outputs[key][model_outputs['mc_mean'] > 0].mean())
 
-                    metadata[key] = model_outputs[key].mean()
-
-                metadata["abs_error"] = np.abs(
-                    metadata["mc_mean"] - metadata["reweighted_scores"]
+                    metadata[key] = model_outputs[key][model_outputs['mc_mean'] > 0].mean() # model_outputs[key].mean()
+                
+                metadata["abs_error"] = (
+                    np.exp(np.abs(np.log(metadata["mc_mean"]) - np.log(metadata["reweighted_scores"])))
                 )
+                
+                mc_mean_over_zero = model_outputs['mc_mean'][(model_outputs['mc_mean'] > 0) & (model_outputs['reweighted_scores'] > 0)]
+                is_mean_over_zero = model_outputs['reweighted_scores'][(model_outputs['mc_mean'] > 0) & (model_outputs['reweighted_scores'] > 0)]
 
                 metadata_arr.append(metadata)
                 processed_outputs.append(model_outputs)
 
-                # plot_results(model_outputs)
-                # import pdb; pdb.set_trace()
-
         df = pd.DataFrame(metadata_arr)
+        import pdb; pdb.set_trace()
+        print(len(df))
 
         print(
             df.sort_values(by="abs_error", ascending=True)[
                 [
+                    "model_name",
                     "proposal_idx_switch",
                     "ablation_intensity",
                     "proposal_bias",
@@ -137,13 +144,35 @@ def main():
                     "mc_mean",
                     "reweighted_scores",
                     "judge_scores",
+                    "num_particles",
+                    # "sample_0_ratio",
+                    # "sample_1_ratio",                    
                 ]
-            ].head(20)
+            ].head(10)
+        )
+            
+        print(
+            df.sort_values(by="abs_error", ascending=True)[
+                [   
+                    "model_name",
+                    "proposal_idx_switch",
+                    "ablation_intensity",
+                    "proposal_bias",
+                    "abs_error",
+                    "mc_mean",
+                    "reweighted_scores",
+                    "judge_scores",
+                    "num_particles",
+                    "seed",
+                    # "sample_0_ratio",
+                    # "sample_1_ratio",
+                ]
+            ].tail(10)
         )
 
         for proposal_idx_switch in df["proposal_idx_switch"].unique():
             subset = df[df["proposal_idx_switch"] == proposal_idx_switch]
-            subset = subset[subset["proposal_bias"] == 1.0]
+            # subset = subset[subset["proposal_bias"] == 1.0]
             print(f"Proposal idx switch: {proposal_idx_switch}")
             print(
                 subset[
@@ -155,6 +184,8 @@ def main():
                         "reweighted_scores",
                         "mc_mean",
                         "prompt_kl",
+                        "num_particles",
+                        "seed",
                     ]
                 ]
             )
@@ -200,7 +231,7 @@ def main():
             ax[0].grid(True)
             ax[1].grid(True)
             ax[2].grid(True)
-            plt.savefig(f"kl_vs_judge_{model_dir.name}_{proposal_idx_switch}.png")
+            plt.savefig(f"kl_vs_judge_{model_dir.name}_{proposal_idx_switch}.pdf")
             plt.show()
 
 
