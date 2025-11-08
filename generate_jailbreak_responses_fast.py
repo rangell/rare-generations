@@ -1,14 +1,13 @@
 import argparse
 import json
+import gc
 import random
 import torch
 from tqdm import tqdm
 from datasets import load_dataset
-from joblib import Parallel, delayed
 from vllm import LLM, SamplingParams
-from strong_reject.evaluate import strongreject_rubric
 
-# from utils import expand_shortcut_model_name
+from smc.rewards import _sr_harmful_reward_fn
 
 
 if __name__ == "__main__":
@@ -21,7 +20,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--jailbreak-dataset",
-        default="jailbreak_success",
+        default="monte_carlo_estimates/data/strong_reject/jailbreaks.json",
         help="JSON-formatted jailbreak dataset to use.",
     )
     parser.add_argument(
@@ -40,6 +39,12 @@ if __name__ == "__main__":
         help="Number of sequences to sample from the model.",
     )
     parser.add_argument(
+        "--judge_batch_size",
+        type=int,
+        default=256,
+        help="Number of sequences to sample from the model.",
+    )
+    parser.add_argument(
         "--batch-size", type=int, default=100, help="Max batch size for generation."
     )
     parser.add_argument("--output-dir", help="Path to output directory.", required=True)
@@ -48,8 +53,8 @@ if __name__ == "__main__":
     print("args: ", vars(args))
 
     # for determinism, maybe need more?
-    random.seed(42)
 
+    random.seed(42)
     # load the jailbreak dataset
     jailbreaks_dataset = load_dataset("json", data_files=args.jailbreak_dataset)[
         "train"
@@ -66,7 +71,6 @@ if __name__ == "__main__":
     print("jailbreaks dataset length: ", len(jailbreaks_dataset))
 
     # set the sampling parameters
-    # sampling_params = SamplingParams(temperature=args.temperature, top_p=args.top_p, top_k=args.top_k, max_tokens=args.max_new_tokens, n=min(args.num_return_sequences, 100))
     sampling_params = SamplingParams(
         temperature=args.temperature,
         max_tokens=args.max_new_tokens,
@@ -74,7 +78,15 @@ if __name__ == "__main__":
     )
 
     # load the model
-    llm = LLM(model=args.target_model, max_model_len=20000, dtype=torch.bfloat16)
+    llm = LLM(
+        model=args.target_model,
+        enable_prefix_caching=True,
+        enable_lora=True,
+        tensor_parallel_size=torch.cuda.device_count(),
+        max_num_seqs=1000,
+        gpu_memory_utilization=0.9,
+        dtype=torch.bfloat16,
+    )
 
     # generate responses
     convos = [
@@ -82,30 +94,29 @@ if __name__ == "__main__":
         for s in jailbreaks_dataset["jailbreak_prompt_text"]
     ]
     outputs = []
-    for _ in range(args.num_return_sequences // args.batch_size):
+    for _ in range(max(args.num_return_sequences // args.batch_size, 1)):
         outputs.append(llm.chat(convos, sampling_params))
+
+    del llm
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # dump responses
     output_fname = (
-        f"{args.output_dir}/{args.target_model.split('/')[1]}-responses-test.json"
+        f"{args.output_dir}/{args.target_model.split('/')[1]}-mc_est_10k.json"
     )
     with open(output_fname, "w") as f:
         for zip_tuple in tqdm(zip(jailbreaks_dataset, *outputs)):
             in_data = zip_tuple[0]
             meta_output = list(zip_tuple[1:])
-            scoring_fn = lambda r: strongreject_rubric(in_data["forbidden_prompt"], r)[
-                "score"
-            ]
+            responses = [r.text for output in meta_output for r in output.outputs]
             in_data.update(
                 {
-                    "response": [
-                        r.text for output in meta_output for r in output.outputs
-                    ],
-                    "score": Parallel(n_jobs=50)(
-                        delayed(scoring_fn)(r.text)
-                        for output in meta_output
-                        for r in output.outputs
-                    ),
+                    "response": responses,
+                    "score": _sr_harmful_reward_fn(
+                        forbidden_prompt=in_data["forbidden_prompt"],
+                        responses=responses,
+                    ).tolist(),
                 }
             )
             f.write(json.dumps({k: v for k, v in in_data.items()}) + "\n")

@@ -3,16 +3,17 @@ import asyncio
 import json
 import logging
 import pandas as pd
-import random
 from tqdm import tqdm
+import random
 
 import torch
-import torch.nn as nn
 from torch import Tensor
+from together import Together
 from vllm import SamplingParams
 from vllm.lora.request import LoRARequest
 
 from tqdm import trange
+
 
 from persona_vectors.eval.model_utils import load_model, load_vllm_model
 from persona_vectors.judge import OpenAiJudge
@@ -26,8 +27,10 @@ from refusal_direction.pipeline.utils.hook_utils import (
     get_direction_ablation_output_hook,
 )
 
+
 logging.getLogger("openai").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.ERROR)
+
 
 # Set up credentials and environment
 config = setup_credentials()
@@ -83,20 +86,6 @@ def sample_steering(
         ]
         outputs.extend(output)
     return prompts, outputs
-
-
-class NoRefusalModelWrapper(nn.Module):
-    def __init__(self, model, fwd_pre_hooks=[], fwd_hooks=[]):
-        super().__init__()
-        self.model = model
-
-    def forward(self, x):
-        # Custom pre-processing
-        x = x * 2
-        output = self.wrapped_module(x)
-        # Custom post-processing
-        output = torch.relu(output)
-        return output
 
 
 def sample_no_refusal(
@@ -305,12 +294,8 @@ def load_persona_questions(
     judge_prompts[trait] = prompt_template
     judge_prompts["coherence"] = Prompts[f"coherence_{eval_type}"]
 
-    from IPython import embed
-
-    embed()
-    exit()
-
     raw_questions = trait_data["questions"]
+
     questions = []
     for i, question in enumerate(raw_questions):
         if persona_instructions_type is not None:
@@ -347,6 +332,197 @@ def load_persona_questions(
                 )
             )
     return questions
+
+
+def eval_batched_low_cost(
+    questions,
+    llm,
+    tokenizer,
+    coef,
+    fwd_pre_hooks=[],
+    fwd_hooks=[],
+    vector=None,
+    layer=None,
+    n_per_question=100,
+    max_concurrent_judges=100,
+    max_tokens=1000,
+    steering_type="last",
+    lora_path=None,
+):
+    """Batch process all questions together for faster inference"""
+    # Collect all prompts from all questions
+    all_paraphrases = []
+    all_conversations = []
+    question_indices = []
+    for i, question in enumerate(questions):
+        paraphrases, conversations = question.get_input(n_per_question)
+        all_paraphrases.extend(paraphrases)
+        all_conversations.extend(conversations)
+        question_indices.extend([i] * len(paraphrases))
+
+    # Generate all answers in a single batch
+    print(f"Generating {len(all_conversations)} responses in a single batch...")
+    if coef != 0:
+        prompts, answers = sample_steering(
+            llm,
+            tokenizer,
+            all_conversations,
+            vector,
+            layer,
+            coef,
+            temperature=questions[0].temperature,
+            max_tokens=max_tokens,
+            steering_type=steering_type,
+        )
+    elif len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
+        prompts, answers = sample(
+            llm,
+            tokenizer,
+            all_conversations,
+            temperature=questions[0].temperature,
+            max_tokens=max_tokens,
+            lora_path=lora_path,
+        )
+    else:
+        prompts, answers = sample_no_refusal(
+            llm,
+            tokenizer,
+            all_conversations,
+            fwd_pre_hooks=fwd_pre_hooks,
+            fwd_hooks=fwd_hooks,
+            temperature=questions[0].temperature,
+            max_tokens=max_tokens,
+        )
+
+    # Prepare data structures for batch evaluation
+    question_dfs = []
+    all_judge_tasks = []
+    all_judge_indices = {}  # Store (question_idx, metric, sample_idx) for each task
+
+    print("Preparing judge evaluation tasks...")
+    with open("batch_input.jsonl", "w", encoding="utf-8") as f:
+        for i, question in enumerate(questions):
+            # Get this question's data
+            indices = [j for j, idx in enumerate(question_indices) if idx == i]
+            q_paraphrases = [all_paraphrases[j] for j in indices]
+            q_prompts = [prompts[j] for j in indices]
+            q_answers = [answers[j] for j in indices]
+
+            # Create dataframe for this question
+            df = pd.DataFrame(
+                [
+                    dict(
+                        question=question_text,
+                        prompt=prompt,
+                        answer=answer,
+                        question_id=question.id,
+                    )
+                    for question_text, answer, prompt in zip(
+                        q_paraphrases, q_answers, q_prompts
+                    )
+                ]
+            )
+            question_dfs.append(df)
+
+            # Collect all judge tasks
+            for metric, judge in question.judges.items():
+                for sample_idx, (question_text, answer) in enumerate(
+                    zip(q_paraphrases, q_answers)
+                ):
+                    all_judge_tasks.append((judge, question_text, answer))
+                    all_judge_indices[f"{metric}_{i}_{sample_idx}"] = (
+                        i,
+                        metric,
+                        sample_idx,
+                    )
+
+                    body = {
+                        "model": judge.model,
+                        "temperature": 0.0,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": judge.prompt_template.format(
+                                    question=question_text, answer=answer
+                                ),
+                            }
+                        ],
+                        "max_tokens": 1,
+                    }
+                    line = {
+                        "custom_id": f"{metric}_{i}_{sample_idx}",
+                        "body": body,
+                    }
+
+                    import json
+
+                    f.write(json.dumps(line) + "\n")
+
+    import time
+
+    client = Together()  # uses TOGETHER_API_KEY env var
+
+    file_resp = client.files.upload(
+        file="batch_input.jsonl",
+        purpose="batch-api",  # important for Batch API
+    )
+
+    print("Uploaded file:", file_resp.id)
+
+    batch = client.batches.create_batch(
+        file_id=file_resp.id,
+        endpoint="/v1/chat/completions",
+    )
+
+    print("Created batch:", batch.id)
+
+    while True:
+        batch_status = client.batches.get_batch(batch.id)
+        print("Status:", batch_status.status)
+
+        if batch_status.status in ("COMPLETED", "FAILED", "CANCELLED", "EXPIRED"):
+            break
+
+        time.sleep(15)  # tune based on how spammy you want to be
+
+    if batch_status.status != "COMPLETED":
+        raise RuntimeError(
+            f"Batch did not complete successfully: {batch_status.status}"
+        )
+
+    output_path = "batch_output.jsonl"
+
+    client.files.retrieve_content(
+        id=batch_status.output_file_id,
+        output=output_path,
+    )
+
+    print("Downloaded results to", output_path)
+
+    judge_responses = {}
+
+    with open(output_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+
+            obj = json.loads(line)
+            cid = obj.get("custom_id")
+            try:
+                resp = int(obj["response"]["body"]["choices"][0]["message"]["content"])
+            except Exception as e:
+                print("Exception!: ", e, obj)
+                resp = 0
+
+            judge_responses[cid] = resp
+
+    # Distribute results back to the appropriate dataframes
+    print("Processing judge results...")
+    for cid, result in judge_responses.items():
+        question_idx, metric, sample_idx = all_judge_indices[cid]
+        question_dfs[question_idx].loc[sample_idx, metric] = result
+
+    return question_dfs
 
 
 async def eval_batched(
@@ -412,7 +588,7 @@ async def eval_batched(
     # Prepare data structures for batch evaluation
     question_dfs = []
     all_judge_tasks = []
-    all_judge_indices = []  # Store (question_idx, metric, sample_idx) for each task
+    all_judge_indices = []
 
     print("Preparing judge evaluation tasks...")
     for i, question in enumerate(questions):
@@ -612,25 +788,57 @@ def main(
         version=version,
     )
 
+    # outputs_list = eval_batched_low_cost(
+    #    questions,
+    #    llm,
+    #    tokenizer,
+    #    coef,
+    #    fwd_pre_hooks=ablation_fwd_pre_hooks,
+    #    fwd_hooks=ablation_fwd_hooks,
+    #    vector=vector,
+    #    layer=layer,
+    #    n_per_question=n_per_question,
+    #    max_concurrent_judges=max_concurrent_judges,
+    #    max_tokens=max_tokens,
+    #    steering_type=steering_type,
+    #    lora_path=lora_path,
+    # )
+
     if batch_process:
         print(f"Batch processing {len(questions)} '{trait}' questions...")
-        outputs_list = asyncio.run(
-            eval_batched(
-                questions,
-                llm,
-                tokenizer,
-                coef,
-                fwd_pre_hooks=ablation_fwd_pre_hooks,
-                fwd_hooks=ablation_fwd_hooks,
-                vector=vector,
-                layer=layer,
-                n_per_question=n_per_question,
-                max_concurrent_judges=max_concurrent_judges,
-                max_tokens=max_tokens,
-                steering_type=steering_type,
-                lora_path=lora_path,
-            )
+        outputs_list = eval_batched_low_cost(
+            questions,
+            llm,
+            tokenizer,
+            coef,
+            fwd_pre_hooks=ablation_fwd_pre_hooks,
+            fwd_hooks=ablation_fwd_hooks,
+            vector=vector,
+            layer=layer,
+            n_per_question=n_per_question,
+            max_concurrent_judges=max_concurrent_judges,
+            max_tokens=max_tokens,
+            steering_type=steering_type,
+            lora_path=lora_path,
         )
+
+        # outputs_list = asyncio.run(
+        #    eval_batched(
+        #        questions,
+        #        llm,
+        #        tokenizer,
+        #        coef,
+        #        fwd_pre_hooks=ablation_fwd_pre_hooks,
+        #        fwd_hooks=ablation_fwd_hooks,
+        #        vector=vector,
+        #        layer=layer,
+        #        n_per_question=n_per_question,
+        #        max_concurrent_judges=max_concurrent_judges,
+        #        max_tokens=max_tokens,
+        #        steering_type=steering_type,
+        #        lora_path=lora_path,
+        #    )
+        # )
         outputs = pd.concat(outputs_list)
     else:
         raise NotImplementedError(
