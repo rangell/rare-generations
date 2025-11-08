@@ -24,7 +24,7 @@ from strong_reject.evaluate import strongreject_rubric
 
 from smc.model_utils import load_model_and_tokenizer
 from smc.rewards import _sr_harmful_reward_fn
-from smc.estimate import HarmfulTraitEstimator
+from smc.estimator import HarmfulTraitEstimator
 
 
 def load_refusal_direction(refusal_direction_path):
@@ -105,14 +105,11 @@ class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
         )
 
     def judge_responses(self, prompt: str, responses: List[str]) -> torch.Tensor:
-        def scoring_fn(r):
-            return strongreject_rubric(prompt, r)["score"]
-
-        judge_scores = Parallel(n_jobs=args.n_judge_jobs, prefer="threads")(
-            delayed(scoring_fn)(r) for r in responses
+        scores = _sr_harmful_reward_fn(
+            forbidden_prompt=prompt,
+            responses=responses,
         )
-        judge_scores = torch.tensor(judge_scores)
-        return judge_scores
+        return scores
 
     def create_reward_function(self, prompt: str) -> Callable:
         def reward_fn(input_ids):
@@ -121,7 +118,6 @@ class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
                 responses=self.tokenizer.batch_decode(
                     input_ids, skip_special_tokens=True
                 ),
-                batch_size=self.args.reward_batch_size,
             )
 
             return scores
@@ -288,12 +284,6 @@ def add_arguments(parser):
         help="Batch size for forward pass.",
     )
     parser.add_argument(
-        "--ablation_intensity",
-        type=float,
-        default=1.0,
-        help="Fraction of the refusal direction to ablate in proposal (in [0, 1]).",
-    )
-    parser.add_argument(
         "--proposal_bias",
         type=float,
         default=1.0,
@@ -327,7 +317,6 @@ def add_arguments(parser):
         action="store_true",
         help="Whether to use Sequential Monte Carlo (SMC) for generation.",
     )
-
     parser.add_argument(
         "--use_importance_weights_in_resampling",
         action="store_true",
@@ -336,6 +325,17 @@ def add_arguments(parser):
     parser.add_argument(
         "--smc_verbose", action="store_true", help="Whether to print SMC logs"
     )
+
+    ################### SPECIFIC ARGS #############################
+
+    parser.add_argument(
+        "--ablation_intensity",
+        type=float,
+        default=1.0,
+        help="Fraction of the refusal direction to ablate in proposal (in [0, 1]).",
+    )
+
+    ###############################################################
 
 
 if __name__ == "__main__":
