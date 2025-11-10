@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 import asyncio
 import json
@@ -6,6 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 import random
 import uuid
+import pickle
 
 import torch
 from torch import Tensor
@@ -335,7 +337,7 @@ def load_persona_questions(
     return questions
 
 
-def eval_batched_low_cost(
+def eval_batched(
     questions,
     llm,
     tokenizer,
@@ -397,213 +399,10 @@ def eval_batched_low_cost(
 
     # Prepare data structures for batch evaluation
     question_dfs = []
-    all_judge_tasks = []
-    all_judge_indices = {}  # Store (question_idx, metric, sample_idx) for each task
-
-    print("Preparing judge evaluation tasks...")
-
-    # Create file
-    while True:
-        uid = str(uuid.uuid4())
-        input_fname = f"tmp/batch_input_{uid}.jsonl"
-
-        from pathlib import Path
-
-        file_path = Path(input_fname)
-
-        if not file_path.exists():
-            file_path.touch()
-            break
-
-    with open(input_fname, "w", encoding="utf-8") as f:
-        for i, question in enumerate(questions):
-            # Get this question's data
-            indices = [j for j, idx in enumerate(question_indices) if idx == i]
-            q_paraphrases = [all_paraphrases[j] for j in indices]
-            q_prompts = [prompts[j] for j in indices]
-            q_answers = [answers[j] for j in indices]
-
-            # Create dataframe for this question
-            df = pd.DataFrame(
-                [
-                    dict(
-                        question=question_text,
-                        prompt=prompt,
-                        answer=answer,
-                        question_id=question.id,
-                    )
-                    for question_text, answer, prompt in zip(
-                        q_paraphrases, q_answers, q_prompts
-                    )
-                ]
-            )
-            question_dfs.append(df)
-
-            # Collect all judge tasks
-            for metric, judge in question.judges.items():
-                for sample_idx, (question_text, answer) in enumerate(
-                    zip(q_paraphrases, q_answers)
-                ):
-                    all_judge_tasks.append((judge, question_text, answer))
-                    all_judge_indices[f"{metric}_{i}_{sample_idx}"] = (
-                        i,
-                        metric,
-                        sample_idx,
-                    )
-
-                    body = {
-                        "model": judge.model,
-                        "temperature": 0.0,
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": judge.prompt_template.format(
-                                    question=question_text, answer=answer
-                                ),
-                            }
-                        ],
-                        "max_tokens": 1,
-                    }
-                    line = {
-                        "custom_id": f"{metric}_{i}_{sample_idx}",
-                        "body": body,
-                    }
-
-                    import json
-
-                    f.write(json.dumps(line) + "\n")
-
-    import time
-
-    client = Together()  # uses TOGETHER_API_KEY env var
-
-    file_resp = client.files.upload(
-        file=input_fname,
-        purpose="batch-api",  # important for Batch API
-    )
-
-    print("Uploaded file:", file_resp.id)
-
-    batch = client.batches.create_batch(
-        file_id=file_resp.id,
-        endpoint="/v1/chat/completions",
-    )
-
-    print("Created batch:", batch.id)
-
-    while True:
-        batch_status = client.batches.get_batch(batch.id)
-        print("Status:", batch_status.status)
-
-        if batch_status.status in ("COMPLETED", "FAILED", "CANCELLED", "EXPIRED"):
-            break
-
-        time.sleep(15)  # tune based on how spammy you want to be
-
-    if batch_status.status != "COMPLETED":
-        raise RuntimeError(
-            f"Batch did not complete successfully: {batch_status.status}"
-        )
-
-    output_path = f"tmp/batch_output_{uid}.jsonl"
-
-    client.files.retrieve_content(
-        id=batch_status.output_file_id,
-        output=output_path,
-    )
-
-    print("Downloaded results to", output_path)
-
-    judge_responses = {}
-
-    with open(output_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-
-            obj = json.loads(line)
-            cid = obj.get("custom_id")
-            try:
-                resp = int(obj["response"]["body"]["choices"][0]["message"]["content"])
-            except Exception as e:
-                print("Exception!: ", e, obj)
-                resp = 0
-
-            judge_responses[cid] = resp
-
-    # Distribute results back to the appropriate dataframes
-    print("Processing judge results...")
-    for cid, result in judge_responses.items():
-        question_idx, metric, sample_idx = all_judge_indices[cid]
-        question_dfs[question_idx].loc[sample_idx, metric] = result
-
-    return question_dfs
-
-
-async def eval_batched(
-    questions,
-    llm,
-    tokenizer,
-    coef,
-    fwd_pre_hooks=[],
-    fwd_hooks=[],
-    vector=None,
-    layer=None,
-    n_per_question=100,
-    max_concurrent_judges=100,
-    max_tokens=1000,
-    steering_type="last",
-    lora_path=None,
-):
-    """Batch process all questions together for faster inference"""
-    # Collect all prompts from all questions
-    all_paraphrases = []
-    all_conversations = []
-    question_indices = []
-    for i, question in enumerate(questions):
-        paraphrases, conversations = question.get_input(n_per_question)
-        all_paraphrases.extend(paraphrases)
-        all_conversations.extend(conversations)
-        question_indices.extend([i] * len(paraphrases))
-
-    # Generate all answers in a single batch
-    print(f"Generating {len(all_conversations)} responses in a single batch...")
-    if coef != 0:
-        prompts, answers = sample_steering(
-            llm,
-            tokenizer,
-            all_conversations,
-            vector,
-            layer,
-            coef,
-            temperature=questions[0].temperature,
-            max_tokens=max_tokens,
-            steering_type=steering_type,
-        )
-    elif len(fwd_pre_hooks) == 0 and len(fwd_hooks) == 0:
-        prompts, answers = sample(
-            llm,
-            tokenizer,
-            all_conversations,
-            temperature=questions[0].temperature,
-            max_tokens=max_tokens,
-            lora_path=lora_path,
-        )
-    else:
-        prompts, answers = sample_no_refusal(
-            llm,
-            tokenizer,
-            all_conversations,
-            fwd_pre_hooks=fwd_pre_hooks,
-            fwd_hooks=fwd_hooks,
-            temperature=questions[0].temperature,
-            max_tokens=max_tokens,
-        )
-
-    # Prepare data structures for batch evaluation
-    question_dfs = []
-    all_judge_tasks = []
-    all_judge_indices = []
+    judges_by_metric = {}
+    questions_by_metric = defaultdict(list)
+    answers_by_metric = defaultdict(list)
+    indices_by_metric = defaultdict(list)
 
     print("Preparing judge evaluation tasks...")
     for i, question in enumerate(questions):
@@ -631,44 +430,24 @@ async def eval_batched(
 
         # Collect all judge tasks
         for metric, judge in question.judges.items():
+            judges_by_metric[metric] = judge
             for sample_idx, (question_text, answer) in enumerate(
                 zip(q_paraphrases, q_answers)
             ):
-                all_judge_tasks.append((judge, question_text, answer))
-                all_judge_indices.append((i, metric, sample_idx))
+                questions_by_metric[metric].append(question_text)
+                answers_by_metric[metric].append(answer)
+                indices_by_metric[metric].append((i, sample_idx))
 
-    # Run judge evaluations with concurrency control
-    print(
-        f"Running {len(all_judge_tasks)} judge evaluations with max {max_concurrent_judges} concurrent requests..."
-    )
-    all_results = [None] * len(all_judge_tasks)  # Pre-allocate results array
-
-    # Create a semaphore to limit concurrency
-    semaphore = asyncio.Semaphore(max_concurrent_judges)
-
-    async def run_with_semaphore(task_idx, judge, question_text, answer):
-        async with semaphore:
-            result = await judge(question=question_text, answer=answer)
-            return task_idx, result
-
-    # Create all tasks with semaphore control
-    tasks = [
-        run_with_semaphore(task_idx, judge, question_text, answer)
-        for task_idx, (judge, question_text, answer) in enumerate(all_judge_tasks)
-    ]
-
-    # Process tasks in batches with progress bar
-    with tqdm(total=len(tasks), desc="Judge evaluations") as pbar:
-        for task in asyncio.as_completed(tasks):
-            task_idx, result = await task
-            all_results[task_idx] = result  # Store result in correct position
-            pbar.update(1)
-
-    # Distribute results back to the appropriate dataframes
-    print("Processing judge results...")
-    for task_idx, result in enumerate(all_results):
-        question_idx, metric, sample_idx = all_judge_indices[task_idx]
-        question_dfs[question_idx].loc[sample_idx, metric] = result
+    # Batch judge calls
+    for metric, judge in judges_by_metric.items():
+        print(f"Scoring responses with respect to {metric}...")
+        judge_scores = judge.batch_judge(
+            questions=questions_by_metric[metric], answers=answers_by_metric[metric]
+        )
+        for score, (question_idx, sample_idx) in zip(
+            judge_scores, indices_by_metric[metric]
+        ):
+            question_dfs[question_idx].loc[sample_idx, metric] = score
 
     return question_dfs
 
@@ -803,25 +582,9 @@ def main(
         version=version,
     )
 
-    # outputs_list = eval_batched_low_cost(
-    #    questions,
-    #    llm,
-    #    tokenizer,
-    #    coef,
-    #    fwd_pre_hooks=ablation_fwd_pre_hooks,
-    #    fwd_hooks=ablation_fwd_hooks,
-    #    vector=vector,
-    #    layer=layer,
-    #    n_per_question=n_per_question,
-    #    max_concurrent_judges=max_concurrent_judges,
-    #    max_tokens=max_tokens,
-    #    steering_type=steering_type,
-    #    lora_path=lora_path,
-    # )
-
     if batch_process:
         print(f"Batch processing {len(questions)} '{trait}' questions...")
-        outputs_list = eval_batched_low_cost(
+        outputs_list = eval_batched(
             questions,
             llm,
             tokenizer,
@@ -836,24 +599,6 @@ def main(
             steering_type=steering_type,
             lora_path=lora_path,
         )
-
-        # outputs_list = asyncio.run(
-        #    eval_batched(
-        #        questions,
-        #        llm,
-        #        tokenizer,
-        #        coef,
-        #        fwd_pre_hooks=ablation_fwd_pre_hooks,
-        #        fwd_hooks=ablation_fwd_hooks,
-        #        vector=vector,
-        #        layer=layer,
-        #        n_per_question=n_per_question,
-        #        max_concurrent_judges=max_concurrent_judges,
-        #        max_tokens=max_tokens,
-        #        steering_type=steering_type,
-        #        lora_path=lora_path,
-        #    )
-        # )
         outputs = pd.concat(outputs_list)
     else:
         raise NotImplementedError(

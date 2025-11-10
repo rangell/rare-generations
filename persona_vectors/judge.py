@@ -1,6 +1,14 @@
 import os
+import json
 import math
+import time
+from pathlib import Path
+import uuid
+from typing import List
+
+from together import Together
 from openai import AsyncOpenAI
+
 from persona_vectors.config import setup_credentials
 
 # Set up credentials and environment
@@ -63,7 +71,7 @@ class OpenAiJudge:
             max_tokens=1,
             temperature=0,
             logprobs=True,
-            top_logprobs=20,
+            top_logprobs=1,
             seed=0,
             timeout=60.0,
         )
@@ -173,3 +181,116 @@ class OpenAiJudge:
 
     async def __call__(self, **kwargs):
         return await self.judge(**kwargs)
+
+    def batch_judge(self, questions: List[str], answers: List[str]) -> List[float]:
+        try:
+            # Evaluate this judge template on all question answer pairs
+            uid, infile, outfile = self._create_tmp_file()
+            self._write_prompts_to_file(uid, infile, questions, answers)
+
+            # Stores the responses in outfile
+            responses = self._get_responses(infile, outfile)
+
+            # Order judge scores with question-answer pairs
+            judge_scores = [
+                e[1]
+                for e in sorted(
+                    [(k, v) for k, v in responses.items()], key=lambda x: int(x[0])
+                )
+            ]
+        finally:
+            os.remove(infile)
+            os.remove(outfile)
+
+        return judge_scores
+
+    def _create_tmp_file(self) -> str:
+        while True:
+            uid = str(uuid.uuid4())
+            infile = f"/tmp/batch_input_{uid}.jsonl"
+            outfile = f"/tmp/batch_output_{uid}.jsonl"
+            file_path = Path(infile)
+            if not file_path.exists():
+                file_path.touch()
+                break
+        return uid, infile, outfile
+
+    def _write_prompts_to_file(
+        self, uid: str, infile: str, questions: List[str], answers: List[str]
+    ) -> None:
+        with open(infile, "w", encoding="utf-8") as f:
+            for idx, (q, a) in enumerate(zip(questions, answers)):
+                body = {
+                    "model": self.model,
+                    "temperature": 0.0,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": self.prompt_template.format(
+                                question=q, answer=a
+                            ),
+                        }
+                    ],
+                    "max_tokens": 1,
+                }
+                line = {
+                    "custom_id": f"{idx}",
+                    "body": body,
+                }
+                f.write(json.dumps(line) + "\n")
+
+    def _get_responses(self, infile: str, outfile: str) -> None:
+        client = Together()  # uses TOGETHER_API_KEY env var
+        file_resp = client.files.upload(
+            file=infile,
+            purpose="batch-api",  # important for Batch API
+        )
+
+        print("Uploaded file:", file_resp.id)
+
+        batch = client.batches.create_batch(
+            file_id=file_resp.id,
+            endpoint="/v1/chat/completions",
+        )
+        print("Created batch:", batch.id)
+
+        while True:
+            batch_status = client.batches.get_batch(batch.id)
+            print("Status:", batch_status.status)
+
+            if batch_status.status in ("COMPLETED", "FAILED", "CANCELLED", "EXPIRED"):
+                break
+            time.sleep(5)  # tune based on how spammy you want to be
+
+        if batch_status.status != "COMPLETED":
+            raise RuntimeError(
+                f"Batch did not complete successfully: {batch_status.status}"
+            )
+
+        client.files.retrieve_content(
+            id=batch_status.output_file_id,
+            output=outfile,
+        )
+
+        print("Downloaded results to", outfile)
+
+        judge_responses = {}
+
+        with open(outfile, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+
+                obj = json.loads(line)
+                cid = obj.get("custom_id")
+                try:
+                    resp = int(
+                        obj["response"]["body"]["choices"][0]["message"]["content"]
+                    )
+                except Exception as e:
+                    print("Exception!: ", e, obj)
+                    resp = 0
+
+                judge_responses[cid] = resp
+
+        return judge_responses
