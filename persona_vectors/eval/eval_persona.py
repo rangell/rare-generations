@@ -5,6 +5,7 @@ import logging
 import pandas as pd
 from tqdm import tqdm
 import random
+import uuid
 
 import torch
 from torch import Tensor
@@ -400,7 +401,21 @@ def eval_batched_low_cost(
     all_judge_indices = {}  # Store (question_idx, metric, sample_idx) for each task
 
     print("Preparing judge evaluation tasks...")
-    with open("batch_input.jsonl", "w", encoding="utf-8") as f:
+
+    # Create file
+    while True:
+        uid = str(uuid.uuid4())
+        input_fname = f"tmp/batch_input_{uid}.jsonl"
+
+        from pathlib import Path
+
+        file_path = Path(input_fname)
+
+        if not file_path.exists():
+            file_path.touch()
+            break
+
+    with open(input_fname, "w", encoding="utf-8") as f:
         for i, question in enumerate(questions):
             # Get this question's data
             indices = [j for j, idx in enumerate(question_indices) if idx == i]
@@ -463,7 +478,7 @@ def eval_batched_low_cost(
     client = Together()  # uses TOGETHER_API_KEY env var
 
     file_resp = client.files.upload(
-        file="batch_input.jsonl",
+        file=input_fname,
         purpose="batch-api",  # important for Batch API
     )
 
@@ -490,7 +505,7 @@ def eval_batched_low_cost(
             f"Batch did not complete successfully: {batch_status.status}"
         )
 
-    output_path = "batch_output.jsonl"
+    output_path = f"tmp/batch_output_{uid}.jsonl"
 
     client.files.retrieve_content(
         id=batch_status.output_file_id,
