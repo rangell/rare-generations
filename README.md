@@ -14,7 +14,7 @@ pip install git+https://github.com/dsbowen/strong_reject.git@main
 ### Persona Vectors
 
 ```bash
-python -m persona_vectors.eval.eval_persona --model meta-llama/Llama-3.2-1B-Instruct --trait evil --output_path monte_carlo_estimates/results/persona_vectors/evil/Llama-3.2-1B-Instruct_mc_est_10k.csv --judge_model meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8  --version eval --n_per_question 10000
+python -m persona_vectors.eval.eval_persona --model meta-llama/Llama-3.2-1B-Instruct --trait evil --output_path monte_carlo_estimates/results/persona_vectors/evil/Llama-3.2-1B-Instruct_mc_est_10k.csv --judge_model meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8  --version eval --n_per_question 10000 --overwrite True
 ```
 
 ## Steering Vector Computation

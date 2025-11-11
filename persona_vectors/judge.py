@@ -5,11 +5,15 @@ import time
 from pathlib import Path
 import uuid
 from typing import List
+from joblib import Parallel, delayed
 
 from together import Together
 from openai import AsyncOpenAI
 
 from persona_vectors.config import setup_credentials
+
+
+MAX_BATCH_SIZE = 5000
 
 # Set up credentials and environment
 config = setup_credentials()
@@ -183,13 +187,31 @@ class OpenAiJudge:
         return await self.judge(**kwargs)
 
     def batch_judge(self, questions: List[str], answers: List[str]) -> List[float]:
+        assert len(questions) == len(answers)
+        if len(questions) <= MAX_BATCH_SIZE:
+            return self.batch_judge(questions, answers)
+        else:
+            num_batches = ((len(questions) - 1) // MAX_BATCH_SIZE) + 1
+            chunk_size = math.ceil(len(questions) / num_batches)
+            batched_judge_scores = Parallel(n_jobs=num_batches)(
+                delayed(self._batch_judge)(
+                    questions[i * chunk_size : (i + 1) * chunk_size],
+                    answers[i * chunk_size : (i + 1) * chunk_size],
+                )
+                for i in range(num_batches)
+            )
+            judge_scores = [s for sublist in batched_judge_scores for s in sublist]
+            assert len(judge_scores) == len(questions)
+            return judge_scores
+
+    def _batch_judge(self, questions: List[str], answers: List[str]) -> List[float]:
         try:
             # Evaluate this judge template on all question answer pairs
             uid, infile, outfile = self._create_tmp_file()
             self._write_prompts_to_file(uid, infile, questions, answers)
 
             # Stores the responses in outfile
-            responses = self._get_responses(infile, outfile)
+            responses = self._get_responses(uid, infile, outfile)
 
             # Order judge scores with question-answer pairs
             judge_scores = [
@@ -199,17 +221,17 @@ class OpenAiJudge:
                 )
             ]
         finally:
-            os.remove(infile)
             os.remove(outfile)
+            os.remove(infile)
 
         return judge_scores
 
     def _create_tmp_file(self) -> str:
         while True:
             uid = str(uuid.uuid4())
-            infile = f"/tmp/batch_input_{uid}.jsonl"
-            outfile = f"/tmp/batch_output_{uid}.jsonl"
+            infile = f"batch_input_{uid}.jsonl"
             file_path = Path(infile)
+            outfile = f"batch_output_{uid}.jsonl"
             if not file_path.exists():
                 file_path.touch()
                 break
@@ -239,7 +261,7 @@ class OpenAiJudge:
                 }
                 f.write(json.dumps(line) + "\n")
 
-    def _get_responses(self, infile: str, outfile: str) -> None:
+    def _get_responses(self, uid: str, infile: str, outfile: str) -> None:
         client = Together()  # uses TOGETHER_API_KEY env var
         file_resp = client.files.upload(
             file=infile,
@@ -256,7 +278,7 @@ class OpenAiJudge:
 
         while True:
             batch_status = client.batches.get_batch(batch.id)
-            print("Status:", batch_status.status)
+            print(f"Status ({uid}): {batch_status.status}")
 
             if batch_status.status in ("COMPLETED", "FAILED", "CANCELLED", "EXPIRED"):
                 break
