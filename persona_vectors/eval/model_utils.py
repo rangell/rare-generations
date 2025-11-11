@@ -74,9 +74,9 @@ def load_vllm_model(model_path: str):
             enable_prefix_caching=True,
             enable_lora=True,
             tensor_parallel_size=torch.cuda.device_count(),
-            max_num_seqs=2,  # 32
-            gpu_memory_utilization=0.5,  # 0.9
-            max_model_len=1500,  # 10000
+            max_num_seqs=2048,  # 32
+            gpu_memory_utilization=0.9,  # 0.9
+            max_model_len=15000,  # 10000
             max_lora_rank=128,
         )
         tok = llm.get_tokenizer()
@@ -100,7 +100,7 @@ def load_vllm_model(model_path: str):
         enable_prefix_caching=True,
         enable_lora=True,
         tensor_parallel_size=torch.cuda.device_count(),
-        max_num_seqs=32,
+        max_num_seqs=2048,
         gpu_memory_utilization=0.9,  # 0.9
         max_model_len=15000,  # 10000
         max_lora_rank=128,

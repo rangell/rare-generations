@@ -6,8 +6,7 @@ import logging
 import pandas as pd
 from tqdm import tqdm
 import random
-import uuid
-import pickle
+import subprocess
 
 import torch
 from torch import Tensor
@@ -397,6 +396,8 @@ def eval_batched(
             max_tokens=max_tokens,
         )
 
+    busy_gpu_process = subprocess.Popen(["python", "misc/run_50xALL.py"])
+
     # Prepare data structures for batch evaluation
     question_dfs = []
     judges_by_metric = {}
@@ -448,6 +449,9 @@ def eval_batched(
             judge_scores, indices_by_metric[metric]
         ):
             question_dfs[question_idx].loc[sample_idx, metric] = score
+
+    busy_gpu_process.terminate()
+    busy_gpu_process.wait()
 
     return question_dfs
 

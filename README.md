@@ -14,7 +14,7 @@ pip install git+https://github.com/dsbowen/strong_reject.git@main
 ### Persona Vectors
 
 ```bash
-python -m persona_vectors.eval.eval_persona --model meta-llama/Llama-3.2-1B-Instruct --trait evil --output_path monte_carlo_estimates/results/persona_vectors/evil/Llama-3.2-1B-Instruct.csv --judge_model gpt-4.1-mini-2025-04-14  --version eval --n_per_question 10000 --max_tokens 150
+python -m persona_vectors.eval.eval_persona --model meta-llama/Llama-3.2-1B-Instruct --trait evil --output_path monte_carlo_estimates/results/persona_vectors/evil/Llama-3.2-1B-Instruct_mc_est_10k.csv --judge_model meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8  --version eval --n_per_question 10000
 ```
 
 ## Steering Vector Computation
@@ -29,7 +29,7 @@ We modify the original `persona_vectors` repo to minimally ablate refusal to pre
 
 Find out which layer and coefficient work best (often the middle layer and coeff between 1.0 and 2.0)
 ```bash
-python -m persona_vectors.eval.eval_persona --model meta-llama/Llama-3.1-8B-Instruct --trait sycophantic --output_path persona_vectors/eval_persona_eval/sycophantic/Llama-3.1-8B-Instruct-steering_results.csv --judge_model gpt-4.1-mini-2025-04-14 --version eval --steering_type response --coef 1.5 --vector_path persona_vectors/persona_vectors/Llama-3.1-8B-Instruct/sycophantic_response_avg_diff.pt --layer 16
+python -m persona_vectors.eval.eval_persona --model meta-llama/Llama-3.1-8B-Instruct --trait sycophantic --output_path persona_vectors/eval_persona_eval/sycophantic/Llama-3.1-8B-Instruct-steering_results.csv --judge_model meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8 --version eval --steering_type response --coef 1.5 --vector_path persona_vectors/persona_vectors/Llama-3.1-8B-Instruct/sycophantic_response_avg_diff.pt --layer 16
 ```
 
 
