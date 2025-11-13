@@ -59,7 +59,7 @@ class PersonaEstimator(HarmfulTraitEstimator):
         ).to(float)
 
     def create_reward_function(self, prompt: str) -> Callable:
-        pass
+        raise NotImplementedError("No reward function implemented")
 
     def _init_judge(self, judge_eval_type="0_100"):
         trait_data = json.load(

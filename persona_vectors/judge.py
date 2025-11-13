@@ -13,7 +13,7 @@ from openai import AsyncOpenAI
 from persona_vectors.config import setup_credentials
 
 
-MAX_BATCH_SIZE = 5000
+MAX_BATCH_SIZE = 1000
 
 # Set up credentials and environment
 config = setup_credentials()
@@ -189,11 +189,11 @@ class OpenAiJudge:
     def batch_judge(self, questions: List[str], answers: List[str]) -> List[float]:
         assert len(questions) == len(answers)
         if len(questions) <= MAX_BATCH_SIZE:
-            return self.batch_judge(questions, answers)
+            return self._batch_judge(questions, answers)
         else:
             num_batches = ((len(questions) - 1) // MAX_BATCH_SIZE) + 1
             chunk_size = math.ceil(len(questions) / num_batches)
-            batched_judge_scores = Parallel(n_jobs=num_batches)(
+            batched_judge_scores = Parallel(n_jobs=num_batches, prefer="threads")(
                 delayed(self._batch_judge)(
                     questions[i * chunk_size : (i + 1) * chunk_size],
                     answers[i * chunk_size : (i + 1) * chunk_size],
@@ -220,6 +220,8 @@ class OpenAiJudge:
                     [(k, v) for k, v in responses.items()], key=lambda x: int(x[0])
                 )
             ]
+
+            assert len(judge_scores) == len(questions)
         finally:
             os.remove(outfile)
             os.remove(infile)
@@ -277,12 +279,20 @@ class OpenAiJudge:
         print("Created batch:", batch.id)
 
         while True:
-            batch_status = client.batches.get_batch(batch.id)
-            print(f"Status ({uid}): {batch_status.status}")
+            try:
+                batch_status = client.batches.get_batch(batch.id)
+                print(f"Status ({uid}): {batch_status.status}")
 
-            if batch_status.status in ("COMPLETED", "FAILED", "CANCELLED", "EXPIRED"):
-                break
-            time.sleep(5)  # tune based on how spammy you want to be
+                if batch_status.status in (
+                    "COMPLETED",
+                    "CANCELLED",
+                    "FAILED",
+                    "EXPIRED",
+                ):
+                    break
+                time.sleep(15)  # tune based on how spammy you want to be
+            except Exception as e:
+                print(f"Exception raised: {e}")
 
         if batch_status.status != "COMPLETED":
             raise RuntimeError(
@@ -311,6 +321,7 @@ class OpenAiJudge:
                     )
                 except Exception as e:
                     print("Exception!: ", e, obj)
+                    print("Replacing with: '0'")
                     resp = 0
 
                 judge_responses[cid] = resp

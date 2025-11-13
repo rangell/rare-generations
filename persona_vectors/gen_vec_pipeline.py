@@ -1,7 +1,7 @@
+import os
 import gc
 import torch
 import fire
-import subprocess
 from persona_vectors.eval.eval_persona import main as eval_persona_extract
 from persona_vectors.generate_vec import save_persona_vector
 
@@ -55,14 +55,10 @@ def main(model, trait, judge_model="meta-llama/Llama-4-Maverick-17B-128E-Instruc
     gc.collect()
     torch.cuda.empty_cache()
 
-    # Keep the GPUs busy
-    busy_gpu_process = subprocess.Popen(["python", "misc/run_50xALL.py"])
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     save_dir = f"persona_vectors/persona_vectors/{model_shortname}/"
     save_persona_vector(model, pos_output_path, neg_output_path, trait, save_dir)
-
-    busy_gpu_process.terminate()
-    busy_gpu_process.wait()
 
 
 if __name__ == "__main__":
