@@ -13,7 +13,7 @@ from openai import AsyncOpenAI
 from persona_vectors.config import setup_credentials
 
 
-MAX_BATCH_SIZE = 1000
+MAX_BATCH_SIZE = 5000
 
 # Set up credentials and environment
 config = setup_credentials()
@@ -201,6 +201,7 @@ class OpenAiJudge:
                 for i in range(num_batches)
             )
             judge_scores = [s for sublist in batched_judge_scores for s in sublist]
+
             assert len(judge_scores) == len(questions)
             return judge_scores
 
@@ -208,18 +209,13 @@ class OpenAiJudge:
         try:
             # Evaluate this judge template on all question answer pairs
             uid, infile, outfile = self._create_tmp_file()
-            self._write_prompts_to_file(uid, infile, questions, answers)
+            custom_ids = self._write_prompts_to_file(uid, infile, questions, answers)
 
             # Stores the responses in outfile
             responses = self._get_responses(uid, infile, outfile)
 
             # Order judge scores with question-answer pairs
-            judge_scores = [
-                e[1]
-                for e in sorted(
-                    [(k, v) for k, v in responses.items()], key=lambda x: int(x[0])
-                )
-            ]
+            judge_scores = [responses.get(k, 0) for k in custom_ids]
 
             assert len(judge_scores) == len(questions)
         finally:
@@ -241,7 +237,8 @@ class OpenAiJudge:
 
     def _write_prompts_to_file(
         self, uid: str, infile: str, questions: List[str], answers: List[str]
-    ) -> None:
+    ) -> List[str]:
+        custom_ids = []
         with open(infile, "w", encoding="utf-8") as f:
             for idx, (q, a) in enumerate(zip(questions, answers)):
                 body = {
@@ -255,6 +252,7 @@ class OpenAiJudge:
                             ),
                         }
                     ],
+                    "min_tokens": 1,
                     "max_tokens": 1,
                 }
                 line = {
@@ -262,17 +260,19 @@ class OpenAiJudge:
                     "body": body,
                 }
                 f.write(json.dumps(line) + "\n")
+                custom_ids.append(f"{idx}")
+        return custom_ids
 
     def _get_responses(self, uid: str, infile: str, outfile: str) -> None:
-        client = Together()  # uses TOGETHER_API_KEY env var
-        file_resp = client.files.upload(
+        together_client = Together()  # uses TOGETHER_API_KEY env var
+        file_resp = together_client.files.upload(
             file=infile,
             purpose="batch-api",  # important for Batch API
         )
 
         print("Uploaded file:", file_resp.id)
 
-        batch = client.batches.create_batch(
+        batch = together_client.batches.create_batch(
             file_id=file_resp.id,
             endpoint="/v1/chat/completions",
         )
@@ -280,7 +280,7 @@ class OpenAiJudge:
 
         while True:
             try:
-                batch_status = client.batches.get_batch(batch.id)
+                batch_status = together_client.batches.get_batch(batch.id)
                 print(f"Status ({uid}): {batch_status.status}")
 
                 if batch_status.status in (
@@ -299,7 +299,7 @@ class OpenAiJudge:
                 f"Batch did not complete successfully: {batch_status.status}"
             )
 
-        client.files.retrieve_content(
+        together_client.files.retrieve_content(
             id=batch_status.output_file_id,
             output=outfile,
         )
