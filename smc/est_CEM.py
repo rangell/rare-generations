@@ -158,7 +158,7 @@ def main(args):
         data_files=args.mc_est_dataset,
     )["train"]
 
-    estimator = UnsafeToUnsafeEstimator(
+    estimator = CEMEstimator(
         args=args,
         model=model,
         tokenizer=tokenizer,
@@ -177,7 +177,7 @@ def main(args):
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
         model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
 
-        cross_entropy_objective, _ = estimator.estimate_harmful_trait(
+        cross_entropy_objective, _ = estimator.estimate_CEM_harmful_trait(
             prompt=example["forbidden_prompt"],
             completions=None,
             judge_scores=None,
