@@ -14,7 +14,7 @@ if torch.cuda.device_count() > 1:
 
 model.to(device)
 
-batch_size = 2048 * torch.cuda.device_count()
+batch_size = 1024 * torch.cuda.device_count()
 
 while True:
     inputs = torch.randn(batch_size, 1024 * 8, device=device)

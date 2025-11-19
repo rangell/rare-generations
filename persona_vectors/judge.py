@@ -193,15 +193,15 @@ class OpenAiJudge:
         else:
             num_batches = ((len(questions) - 1) // MAX_BATCH_SIZE) + 1
             chunk_size = math.ceil(len(questions) / num_batches)
-            batched_judge_scores = Parallel(n_jobs=num_batches, prefer="threads")(
+            batched_judge_scores = Parallel(n_jobs=1, prefer="threads")(
                 delayed(self._batch_judge)(
                     questions[i * chunk_size : (i + 1) * chunk_size],
                     answers[i * chunk_size : (i + 1) * chunk_size],
                 )
                 for i in range(num_batches)
             )
-            judge_scores = [s for sublist in batched_judge_scores for s in sublist]
 
+            judge_scores = [s for sublist in batched_judge_scores for s in sublist]
             assert len(judge_scores) == len(questions)
             return judge_scores
 
