@@ -23,7 +23,7 @@ class CEMHarmfulTraitEstimator(ABC):
         pass
 
     def estimate_CEM_harmful_trait(
-        self, prompt: str, completions: List[str], judge_scores: torch.Tensor
+        self, prompt: str, importance_weights: torch.Tensor, completions: List[str], judge_scores: torch.Tensor
     ):
         # Initialize the conversation
         messages = [
@@ -43,12 +43,18 @@ class CEMHarmfulTraitEstimator(ABC):
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         input_ids = inputs["input_ids"][:, 1:]
         attention_mask = inputs["attention_mask"][:, 1:]
+        
+        prompt_len = input_ids.shape[1]
+
 
         completion_ids = self.tokenizer(
-            [self.tokenizer.generation_prompt + comp for comp in completions],
+            completions,
             return_tensors="pt",
             padding=True,
         ).to(self.model.device)
+        
+        assert completion_ids["input_ids"].shape[0] == self.args.num_particles
+        assert completion_ids["input_ids"][:, :prompt_len].equal(input_ids)
 
         # Clear cache to avoid OOM errors
         gc.collect()
@@ -61,6 +67,7 @@ class CEMHarmfulTraitEstimator(ABC):
             input_ids=input_ids,
             attention_mask=attention_mask,
             prompt=prompt,
+            importance_weights=importance_weights,
         )
         print("\n-----------------------------------------------\n")
 
@@ -161,6 +168,7 @@ class CEMHarmfulTraitEstimator(ABC):
         tokenizer,
         input_ids,
         completion_ids,
+        importance_weights,
         judge_scores,
         attention_mask,
         proposal_context_manager: Callable,
@@ -280,17 +288,6 @@ class CEMHarmfulTraitEstimator(ABC):
                 num_particles,
             )
 
-            log_importance_weights += (
-                base_next_token_logprobs - proposal_next_token_logprobs
-            )
-
-            log_importance_weight_arr.append(
-                base_next_token_logprobs - proposal_next_token_logprobs
-            )
-            assert len(log_importance_weight_arr) == generation_idx + 1, (
-                len(log_importance_weight_arr),
-                generation_idx + 1,
-            )
             # Update input arguments
 
             _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
@@ -302,22 +299,13 @@ class CEMHarmfulTraitEstimator(ABC):
                 cache_position[-1:] + 1
             )  # add one more position for the next token
 
-        importance_weight_arr = torch.exp(torch.cat(log_importance_weight_arr, dim=1))
-        assert importance_weight_arr.shape == (num_particles, max_new_tokens), (
-            importance_weight_arr.shape,
-            num_particles,
-            max_new_tokens,
-        )
-
-        importance_weights = log_importance_weights.exp()
 
         reweighted_scores = judge_scores * importance_weights.squeeze(1)
         cross_entropy_objective = reweighted_scores * proposal_next_token_logprobs
 
         ret = dict(
-            importance_weights=importance_weights.cpu().numpy(),
             cross_entropy_objective=cross_entropy_objective.cpu().numpy(),
-            log_importance_weights=log_importance_weights.cpu().numpy(),
+            proposal_next_token_logprobs=proposal_next_token_logprobs.cpu().numpy(),
         )
 
         return ret
