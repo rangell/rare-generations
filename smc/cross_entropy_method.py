@@ -32,6 +32,7 @@ def estimate_cross_entropy_loss(
     """Implements rare event estimation using sequential Monte Carlo."""
 
     assert prompt != ""
+    # assert decoding == "sample", "Only 'sample' decoding is supported in this function."
 
     assert smc_args is None, "SMC not yet supported in this function."
 
@@ -49,11 +50,11 @@ def estimate_cross_entropy_loss(
         input_ids[0] == completion_ids[0][:prompt_len].all()
     ), "Input IDs and completion IDs do not match in the prompt region."
 
-    # _input_ids = input_ids.detach().clone()
-    # _attention_mask = attention_mask.detach().clone()
-    # _completed_generation = torch.zeros((num_particles, 1), dtype=torch.bool).to(
-    #     _input_ids.device
-    # )
+    _input_ids = input_ids.detach().clone()
+    _attention_mask = attention_mask.detach().clone()
+    _completed_generation = torch.zeros((num_particles, 1), dtype=torch.bool).to(
+        _input_ids.device
+    )
 
     _inputs = {"input_ids": _input_ids, "attention_mask": _attention_mask}
 
