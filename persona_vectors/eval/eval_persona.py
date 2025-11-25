@@ -1,20 +1,17 @@
-from collections import defaultdict
 import os
+from collections import defaultdict
 import asyncio
 import json
 import logging
 import pandas as pd
 from tqdm import tqdm
+from tqdm import trange
 import random
 import subprocess
 
 import torch
-from torch import Tensor
 from vllm import SamplingParams
 from vllm.lora.request import LoRARequest
-
-from tqdm import trange
-
 
 from persona_vectors.eval.model_utils import load_model, load_vllm_model
 from persona_vectors.judge import OpenAiJudge
@@ -22,11 +19,8 @@ from persona_vectors.activation_steer import ActivationSteerer
 from persona_vectors.eval.prompts import Prompts
 from persona_vectors.config import setup_credentials
 
-from refusal_direction.pipeline.utils.hook_utils import (
-    add_hooks,
-    get_direction_ablation_input_pre_hook,
-    get_direction_ablation_output_hook,
-)
+from refusal_direction.pipeline.utils.hook_utils import add_hooks
+from smc.model_utils import load_refusal_direction, get_all_direction_ablation_hooks
 
 
 logging.getLogger("openai").setLevel(logging.WARNING)
@@ -100,6 +94,7 @@ def sample_no_refusal(
     max_tokens=1000,
     temperature=1,
     min_tokens=1,
+    num_ablated_tokens=30,
 ):
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
@@ -112,8 +107,6 @@ def sample_no_refusal(
                 messages, tokenize=False, add_generation_prompt=True
             )
         )
-
-    num_ablated_tokens = 30
 
     outputs = []
     for i in trange(0, len(prompts), bs):
@@ -480,59 +473,6 @@ def eval_batched(
     busy_gpu_process.wait()
 
     return question_dfs
-
-
-def load_refusal_direction(refusal_direction_path):
-    direction_path = os.path.join(refusal_direction_path, "direction.pt")
-    metadata_path = os.path.join(refusal_direction_path, "direction_metadata.json")
-    direction = torch.load(direction_path)
-    with open(metadata_path, "r") as f:
-        metadata = json.load(f)
-    metadata["direction"] = direction
-    return metadata
-
-
-def get_all_direction_ablation_hooks(
-    model, direction: Tensor, ablation_intensity: float = 1.0
-):
-    # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
-    model_block_modules = model.model.layers
-    model_attn_modules = torch.nn.ModuleList(
-        [block_module.self_attn for block_module in model_block_modules]
-    )
-    model_mlp_modules = torch.nn.ModuleList(
-        [block_module.mlp for block_module in model_block_modules]
-    )
-
-    fwd_pre_hooks = [
-        (
-            model_block_modules[layer],
-            get_direction_ablation_input_pre_hook(
-                direction=direction, ablation_intensity=ablation_intensity
-            ),
-        )
-        for layer in range(model.config.num_hidden_layers)
-    ]
-    fwd_hooks = [
-        (
-            model_attn_modules[layer],
-            get_direction_ablation_output_hook(
-                direction=direction, ablation_intensity=ablation_intensity
-            ),
-        )
-        for layer in range(model.config.num_hidden_layers)
-    ]
-    fwd_hooks += [
-        (
-            model_mlp_modules[layer],
-            get_direction_ablation_output_hook(
-                direction=direction, ablation_intensity=ablation_intensity
-            ),
-        )
-        for layer in range(model.config.num_hidden_layers)
-    ]
-
-    return fwd_pre_hooks, fwd_hooks
 
 
 def main(
