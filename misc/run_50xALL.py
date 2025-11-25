@@ -26,4 +26,4 @@ while True:
     loss.backward()
     optimizer.step()
 
-    time.sleep(0.01)
+    time.sleep(0.001)

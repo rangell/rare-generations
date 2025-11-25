@@ -6,10 +6,11 @@ pip install git+https://github.com/dsbowen/strong_reject.git@main
 
 ## Monte Carlo estimation
 
-
 ### StrongREJECT
 
-[TODO]
+```bash
+python generate_jailbreak_responses_fast.py --target-model meta-llama/Llama-3.1-8B-Instruct --num-return-sequences 10000 --output-dir monte_carlo_estimates/results/strong_reject/
+```
 
 ### Persona Vectors
 

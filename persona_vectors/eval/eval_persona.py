@@ -10,7 +10,6 @@ import subprocess
 
 import torch
 from torch import Tensor
-from together import Together
 from vllm import SamplingParams
 from vllm.lora.request import LoRARequest
 
@@ -114,24 +113,51 @@ def sample_no_refusal(
             )
         )
 
+    num_ablated_tokens = 30
+
     outputs = []
     for i in trange(0, len(prompts), bs):
         batch = prompts[i : i + bs]
         tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True)
         tokenized_batch = {k: v.to(model.device) for k, v in tokenized_batch.items()}
-        with add_hooks(
-            module_forward_pre_hooks=fwd_pre_hooks, module_forward_hooks=fwd_hooks
+        with (
+            torch.no_grad(),
+            add_hooks(
+                module_forward_pre_hooks=fwd_pre_hooks, module_forward_hooks=fwd_hooks
+            ),
         ):
-            with torch.no_grad():
-                output = model.generate(
-                    **tokenized_batch,
-                    do_sample=(temperature > 0),
-                    temperature=temperature,
-                    top_p=top_p,
-                    max_new_tokens=max_tokens,
-                    use_cache=True,
-                    min_new_tokens=min_tokens,
-                )
+            prelim_output = model.generate(
+                **tokenized_batch,
+                do_sample=(temperature > 0),
+                temperature=temperature,
+                top_p=top_p,
+                max_new_tokens=num_ablated_tokens,
+                use_cache=True,
+                min_new_tokens=min_tokens,
+            )
+
+        attention_mask = tokenized_batch["attention_mask"]
+        real_batch_size = attention_mask.shape[0]
+        attention_mask = torch.cat(
+            (
+                attention_mask,
+                torch.ones(real_batch_size, num_ablated_tokens).to("cuda"),
+            ),
+            dim=1,
+        )
+
+        with torch.no_grad():
+            output = model.generate(
+                input_ids=prelim_output,
+                attention_mask=attention_mask,
+                do_sample=(temperature > 0),
+                temperature=temperature,
+                top_p=top_p,
+                max_new_tokens=max_tokens,
+                use_cache=True,
+                min_new_tokens=min_tokens,
+            )
+
         prompt_len = tokenized_batch["input_ids"].shape[1]
         output = [
             tokenizer.decode(o[prompt_len:], skip_special_tokens=True) for o in output
@@ -628,8 +654,13 @@ def main(
         outputs = pd.concat(outputs)
     print(output_path)
     outputs.to_csv(output_path, index=False)
-    for trait in [trait, "coherence"]:
-        print(f"{trait}:  {outputs[trait].mean():.2f} +- {outputs[trait].std():.2f}")
+    for t in [trait, "coherence"]:
+        print(f"{t}:  {outputs[t].mean():.2f} +- {outputs[t].std():.2f}")
+
+    success_rate = ((outputs[trait] >= 50) & (outputs["coherence"] >= 50)).mean()
+    print(f"Success_rate: {success_rate}")
+
+    return success_rate
 
 
 if __name__ == "__main__":
