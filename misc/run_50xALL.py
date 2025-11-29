@@ -14,7 +14,7 @@ if torch.cuda.device_count() > 1:
 
 model.to(device)
 
-batch_size = 1024 * torch.cuda.device_count()
+batch_size = 10 * 1024 * torch.cuda.device_count()
 
 while True:
     inputs = torch.randn(batch_size, 1024 * 8, device=device)
@@ -26,4 +26,8 @@ while True:
     loss.backward()
     optimizer.step()
 
+<<<<<<< HEAD
     time.sleep(0.001)
+=======
+    time.sleep(0.0001)
+>>>>>>> 8114e96 (update keeping gpu busy)
