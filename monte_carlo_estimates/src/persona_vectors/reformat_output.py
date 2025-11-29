@@ -1,7 +1,7 @@
-# Usage: python reformat_output.py --trait evil ../../results/persona_vectors/evil/Llama-3.2-1B-Instruct_mc_est_1k.csv --json_outfile ../../results/persona_vectors/evil/Llama-3.2-1B-Instruct-mc_est-1k.json
+# Usage: python reformat_output.py --trait sycophantic --csv_infile ../../results/persona_vectors/sycophantic/Llama-3.2-1B-Instruct_mc_est_10k.csv --json_outfile ../../results/persona_vectors/sycophantic/Llama-3.2-1B-Instruct_mc_est-10k.json
 from collections import defaultdict
-import pandas as pd
 import numpy as np
+import pandas as pd
 from datasets import Dataset
 
 
