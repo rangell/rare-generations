@@ -103,7 +103,7 @@ if __name__ == "__main__":
 
     # dump responses
     output_fname = (
-        f"{args.output_dir}/{args.target_model.split('/')[1]}-mc_est_10k.json"
+        f"{args.output_dir}/{args.target_model.split('/')[1]}_mc_est_10k.json"
     )
     with open(output_fname, "w") as f:
         for zip_tuple in tqdm(zip(jailbreaks_dataset, *outputs)):

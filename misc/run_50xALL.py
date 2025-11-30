@@ -26,8 +26,4 @@ while True:
     loss.backward()
     optimizer.step()
 
-<<<<<<< HEAD
-    time.sleep(0.001)
-=======
     time.sleep(0.0001)
->>>>>>> 8114e96 (update keeping gpu busy)

@@ -74,7 +74,7 @@ def main(args):
     )
 
     if args.mc_est_dataset == "":
-        args.mc_est_dataset = f"monte_carlo_estimates/results/strong_reject/{args.model_shortname}-mc_estimates.json"
+        args.mc_est_dataset = f"monte_carlo_estimates/results/strong_reject/{args.model_shortname}_mc_est_10k.json"
 
     if args.proposal_idx_switch == -1:
         args.proposal_idx_switch = args.max_new_tokens + 1
@@ -118,6 +118,7 @@ def main(args):
     mc_dataset = load_dataset(
         "json",
         data_files=args.mc_est_dataset,
+        streaming=True,
     )["train"]
 
     smc_args = dict(
