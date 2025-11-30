@@ -592,6 +592,7 @@ def main(
                 )
             )
         outputs = pd.concat(outputs)
+
     print(output_path)
     outputs.to_csv(output_path, index=False)
     for t in [trait, "coherence"]:
