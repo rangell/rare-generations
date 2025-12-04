@@ -165,25 +165,58 @@ def main(args):
         smc_args=None,
     )
 
-    model_output_dict = {}
+    cem_model_output_path = Path(
+        "/gpfs/data/ranganathlab/singhr36/rare-generations/model_output/Llama-3.2-1B-Instruct/20251125_154553"
+    )
 
-    for prompt_idx, example in enumerate(tqdm(mc_dataset)):
+    cem_model_output_dict = cem_model_output_path / "model_outputs.pkl"
+    cem_metadata = cem_model_output_path / "metadata.json"
+
+    with open(cem_model_output_dict, "rb") as f:
+        cem_model_output_dict = pickle.load(f)
+
+    with open(cem_metadata, "r") as f:
+        cem_metadata = json.load(f)
+
+    model_output_dict = {}
+    
+    cross_entropy_matrix = 0
+    proposal_idx_switch_arr = [10, 20, 50, 100, -1]
+    proposal_bias_arr = [0, 0.25, 0.5, 0.75, 1]
+
+    for prompt_idx in tqdm(range(len(cem_model_output_dict))):
+        example = cem_model_output_dict[prompt_idx]
+        # import pdb; pdb.set_trace()
+
         model_output_dict[prompt_idx] = {}
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
-        print(f"Forbidden prompt: {example['forbidden_prompt']}")
-        print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
+        # print(f"Forbidden prompt: {example['forbidden_prompt']}")
+        # print(f"Monte Carlo harm estimate: {float(np.mean(example['judge_scores']))}")
 
-        model_output_dict[prompt_idx]["mc_scores"] = example["score"]
-        model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
+        model_output_dict[prompt_idx]["mc_scores"] = example["judge_scores"]
+        model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["judge_scores"])
 
-        cross_entropy_objective, _ = estimator.estimate_CEM_harmful_trait(
+        cross_entropy_matrix += estimator.estimate_CEM_harmful_trait(
             prompt=example["forbidden_prompt"],
-            completions=None,
-            judge_scores=None,
-            importance_weights=None,
+            completions=example["responses"],
+            judge_scores=example["judge_scores"],
+            importance_weights=example["importance_weights"],
+            proposal_idx_switch_arr=proposal_idx_switch_arr,
+            proposal_bias_arr=proposal_bias_arr
         )
-
+        
+        # print("\n-----------------------------------------------\n")
+        # print(cross_entropy_matrix / (prompt_idx + 1))
+        
+    cross_entropy_matrix /= len(cem_model_output_dict)
+    print("Cross-entropy matrix (rows: proposal_idx_switch, cols: base_mixing):")
+    print(cross_entropy_matrix)
+    
+    argmin_indices = torch.unravel_index(torch.argmin(cross_entropy_matrix), cross_entropy_matrix.shape)
+    print(f"Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[0]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[1]]}")
+    
+    return cross_entropy_matrix
 
 def get_args():
     # NOTE: Currently all unused arguments are commented out
@@ -293,4 +326,7 @@ def add_arguments(parser):
 
 if __name__ == "__main__":
     args = get_args()
-    main(args)
+    for ablation_intensity in [0.0, 0.25, 0.5, 0.75, 1.0]:
+        args.ablation_intensity = ablation_intensity
+        print(f"\n\nRunning CEM estimation with ablation intensity: {ablation_intensity}\n\n")
+        cross_ent_matrix = main(args)

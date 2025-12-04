@@ -130,7 +130,7 @@ def main():
                 processed_outputs.append(model_outputs)
 
         df = pd.DataFrame(metadata_arr)
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         print(len(df))
 
         print(
