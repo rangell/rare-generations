@@ -48,10 +48,12 @@ class HarmfulTraitEstimator(ABC):
         )
 
         # Prepare the inputs
-        inputs = self.tokenizer(convos, return_tensors="pt", padding=True)
+        inputs = self.tokenizer(
+            convos, return_tensors="pt", padding=True, add_special_tokens=False
+        )
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-        input_ids = inputs["input_ids"][:, 1:]
-        attention_mask = inputs["attention_mask"][:, 1:]
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
 
         # Clear cache to avoid OOM errors
         gc.collect()
@@ -127,9 +129,8 @@ class HarmfulTraitEstimator(ABC):
                 past_key_values=batch_past_key_values,
                 **kwargs,
             )
-            _batch_outputs.logits = _batch_outputs.logits[
-                :, -1, : self.tokenizer.vocab_size
-            ]
+            # TODO: fix this for Qwen with vocab size
+            _batch_outputs.logits = _batch_outputs.logits[:, -1, :]
             batched_outputs.append(_batch_outputs)
 
         # Reassemble the cache
@@ -226,7 +227,7 @@ class HarmfulTraitEstimator(ABC):
                     **_inputs,
                     past_key_values=base_past_key_values,
                     cache_position=cache_position,
-                    use_cache=True,
+                    use_cache=False,
                     eos_token_id=self.tokenizer.eos_token_id,
                     pad_token_id=self.tokenizer.pad_token_id,
                     output_scores=True,
@@ -266,6 +267,7 @@ class HarmfulTraitEstimator(ABC):
                 proposal_logprobs.exp(),
                 num_samples=1,
             )
+
             # Check if sequence is completed
             _completed_generation |= next_tokens == self.tokenizer.eos_token_id
 
