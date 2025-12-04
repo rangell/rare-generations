@@ -1,0 +1,8 @@
+{
+    "harm_est_setting": "baseline_10_samples",
+    "out_dir": "v1_experiment",
+    "proposal_model": "xai/grok-3",
+    "seed": 42,
+    "proposal_temperature": 1.0,
+    "threshold_for_harmful": null
+}

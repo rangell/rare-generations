@@ -259,9 +259,10 @@ if __name__ == "__main__":
     with open(os.path.join(out_dir, 'metadata.json'), 'w') as f:
         json.dump({**vars(args)}, f, indent=4)
 
-    # experiment = V1Experiment(init_population_size=10, mutations_per_particle=10)
-    experiment = V1Experiment(init_population_size=10, mutations_per_particle=5)
+    # experiment = V1Experiment(init_population_size=1, mutations_per_particle=1)
+    # population, pop_stats = experiment.run(num_steps=2)
 
+    experiment = V1Experiment(init_population_size=10, mutations_per_particle=5)
     population, pop_stats = experiment.run(num_steps=20)
 
 

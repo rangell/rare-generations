@@ -29,10 +29,10 @@ class Particle:
 
 
 class Experiment(ABC):
-    def __init__(self, init_population_size: int, mutations_per_particle: int):
+    def __init__(self, init_population_size: int, mutations_per_particle: int, preserve_ancestor: bool = True):
         self.mutations_per_particle = mutations_per_particle
         self.init_population_size = init_population_size
-
+        self.preserve_ancestor = preserve_ancestor
         logger.info(f"Initializing experiment with {init_population_size} particles")
         self.population = self.initialize_population(init_population_size)
         self.generation = 0
@@ -68,20 +68,24 @@ class Experiment(ABC):
             logger.info(f"{has_score}/{len(particles)} particles already evaluated, skipped")
        
 
-    def mutate_particle_list(self, particles: list[Particle], mutations_per_particle: int) -> list[Particle]:
+    def mutate_particle_list(self, particles: list[Particle], mutations_per_particle: int, preserve_ancestor: bool = True) -> list[Particle]:
         mutated_particles = []
         for particle in particles:
-            for _ in range(mutations_per_particle):
+            for i in range(mutations_per_particle):
                 mutated_particle = deepcopy(particle)
                 mutated_particle.generation = particle.generation + 1
                 mutated_particle.ancestor = particle
-                mutated_particle.score = None
-                self.mutate(particle_for_mutation=mutated_particle)
+                if preserve_ancestor and i == 0:
+                    # keep the ancestor around
+                    pass
+                else:
+                    mutated_particle.score = None
+                    self.mutate(particle_for_mutation=mutated_particle)
                 mutated_particles.append(mutated_particle)
         return mutated_particles
 
     def run_step(self):
-        mutated_population = self.mutate_particle_list(self.population, self.mutations_per_particle)
+        mutated_population = self.mutate_particle_list(self.population, self.mutations_per_particle, self.preserve_ancestor)
         self.evaluate_particle_list(mutated_population)
         self.population = self.select(mutated_population)
         self.generation += 1
@@ -94,10 +98,10 @@ class Experiment(ABC):
 
     def run(self, num_steps: int):
         logger.info(f"Running experiment for {num_steps} steps")
-        pop_stats = self.get_population_stats()
+        pop_stats = [self.get_population_stats()]
         for step in tqdm(range(num_steps), desc="Running experiment"):
             self.run_step()
-            pop_stats = self.get_population_stats()
+            pop_stats.append(self.get_population_stats())
         return self.population, pop_stats
 
     def write_population_data(self, out_path: str):
