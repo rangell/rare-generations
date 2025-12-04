@@ -1,0 +1,23 @@
+{
+    "setting": "baseline_single_sample",
+    "num_forbidden_prompts": 5,
+    "out_dir": "REPLACE_PROPOSAL_NEW_RESULTS_WITH_BASE_OUTPUT_SAMPLES",
+    "teacher_model": "xai/grok-3",
+    "workload": "light",
+    "seed": 42,
+    "teacher_max_tokens": 512,
+    "path_to_forbidden_prompts": "../monte_carlo_estimates/data/strong_reject/harmful_prompts.json",
+    "threshold_for_harmful": 0.3,
+    "teacher_temperature": 1.5,
+    "harm_est_args": {
+        "model_name": "meta-llama/Llama-3.2-1B-Instruct",
+        "ablation_intensity": 0.0,
+        "num_particles": 1,
+        "max_new_tokens": 150,
+        "fwd_batch_size": 20,
+        "proposal_bias": 0.0,
+        "proposal_idx_switch": 0,
+        "reward_batch_size": 1,
+        "use_smc": false
+    }
+}

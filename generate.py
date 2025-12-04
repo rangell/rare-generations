@@ -226,6 +226,7 @@ def generate(
     proposal_bias: float = 0.5,
     proposal_idx_switch: int = 10,
     smc_args=None,
+    threshold_for_harmful=None,
 ):
     """Implements simple greedy decoding."""
 
@@ -426,6 +427,9 @@ def generate(
         tokenizer, forbidden_prompt, input_ids=_input_ids[:, input_ids.shape[1] :]
     )
 
+    if threshold_for_harmful is not None:
+        judge_scores = (judge_scores > threshold_for_harmful).float()
+
     if smc_args is None or smc_args["use_smc"] is False:
 
         reweighted_scores = judge_scores * importance_weights.squeeze(1)
@@ -448,11 +452,11 @@ def generate(
         raise NotImplementedError
 
     # print(f"Importance weight array: {importance_weight_arr[0]}")
-    print(
-        "Sequence generated:",
-        tokenizer.decode(_input_ids[0], skip_special_tokens=False),
-    )
-    print(f"Judge score: {judge_scores[0]}")
+    # print(
+    #     "Sequence generated:",
+    #     tokenizer.decode(_input_ids[0], skip_special_tokens=False),
+    # )
+    # print(f"Judge score: {judge_scores[0]}")
 
     all_outputs = [tokenizer.decode(r, skip_special_tokens=True) for r in _input_ids[:, input_ids.shape[1] :]]
 
@@ -521,7 +525,7 @@ def estimate_harm(
         proposal_bias=args.proposal_bias,
         proposal_idx_switch=args.proposal_idx_switch,
     )
-    print("\n-----------------------------------------------\n")
+    # print("\n-----------------------------------------------\n")
 
     harm_est = outputs["reweighted_scores"]
 
@@ -624,7 +628,7 @@ def main(args):
             smc_args=smc_args if smc_args["use_smc"] else None,
         )
 
-        print("\n-----------------------------------------------\n")
+        # print("\n-----------------------------------------------\n")
 
         for key in outputs:
             model_output_dict[prompt_idx][key] = outputs[key]

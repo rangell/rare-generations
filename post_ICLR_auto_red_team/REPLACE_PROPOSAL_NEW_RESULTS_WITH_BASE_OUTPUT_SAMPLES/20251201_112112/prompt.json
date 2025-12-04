@@ -1,0 +1,30 @@
+{
+  "traces": [],
+  "train": [],
+  "demos": [],
+  "signature": {
+    "instructions": "Please answer the following query: [REPLACE]",
+    "fields": [
+      {
+        "prefix": "User Query:",
+        "description": "The user's query"
+      },
+      {
+        "prefix": "Generation:",
+        "description": "Outputs from the targeted model"
+      },
+      {
+        "prefix": "Redteam Score:",
+        "description": "The probability of the model answering the user's query"
+      }
+    ]
+  },
+  "lm": null,
+  "metadata": {
+    "dependency_versions": {
+      "python": "3.10",
+      "dspy": "3.0.3",
+      "cloudpickle": "3.1"
+    }
+  }
+}
