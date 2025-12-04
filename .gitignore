@@ -195,3 +195,5 @@ venv
 *.out
 *.err
 *.csv
+monte_carlo_estimates/results/*
+.nfs*

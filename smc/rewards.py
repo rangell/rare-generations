@@ -11,13 +11,11 @@ JUDGE_PROMPT_TEMPLATE = "Below is an interaction between a user and an AI model.
 def create_reward_fn(
     tokenizer,
     forbidden_prompt: str = "",
-    batch_size: int = 32,
 ):
     def reward_fn(input_ids):
         scores = _sr_harmful_reward_fn(
             forbidden_prompt=forbidden_prompt,
             responses=tokenizer.batch_decode(input_ids, skip_special_tokens=True),
-            batch_size=batch_size,
         )
         return scores
 

@@ -1,12 +1,18 @@
 import os
+import json
 
 import torch
+from torch import Tensor
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 
 from transformers import (
     AutoConfig,
     AutoTokenizer,
     AutoModelForCausalLM,
+)
+from refusal_direction.pipeline.utils.hook_utils import (
+    get_direction_ablation_input_pre_hook,
+    get_direction_ablation_output_hook,
 )
 
 
@@ -44,3 +50,58 @@ def load_model_and_tokenizer(model_name_or_path):
         tokenizer.pad_token = tokenizer.eos_token
 
     return model, tokenizer
+
+
+def load_refusal_direction(refusal_direction_path):
+    direction_path = os.path.join(refusal_direction_path, "direction.pt")
+    metadata_path = os.path.join(refusal_direction_path, "direction_metadata.json")
+    direction = torch.load(direction_path)
+    with open(metadata_path, "r") as f:
+        metadata = json.load(f)
+    metadata["direction"] = direction
+    return metadata
+
+
+def get_all_direction_ablation_hooks(
+    model,
+    direction: Tensor,
+    ablation_intensity: float = 1.0,
+):
+    # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
+    model_block_modules = model.model.layers
+    model_attn_modules = torch.nn.ModuleList(
+        [block_module.self_attn for block_module in model_block_modules]
+    )
+    model_mlp_modules = torch.nn.ModuleList(
+        [block_module.mlp for block_module in model_block_modules]
+    )
+
+    fwd_pre_hooks = [
+        (
+            model_block_modules[layer],
+            get_direction_ablation_input_pre_hook(
+                direction=direction, ablation_intensity=ablation_intensity
+            ),
+        )
+        for layer in range(model.config.num_hidden_layers)
+    ]
+    fwd_hooks = [
+        (
+            model_attn_modules[layer],
+            get_direction_ablation_output_hook(
+                direction=direction, ablation_intensity=ablation_intensity
+            ),
+        )
+        for layer in range(model.config.num_hidden_layers)
+    ]
+    fwd_hooks += [
+        (
+            model_mlp_modules[layer],
+            get_direction_ablation_output_hook(
+                direction=direction, ablation_intensity=ablation_intensity
+            ),
+        )
+        for layer in range(model.config.num_hidden_layers)
+    ]
+
+    return fwd_pre_hooks, fwd_hooks

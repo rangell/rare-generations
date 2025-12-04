@@ -54,8 +54,9 @@ class PersonaEstimator(HarmfulTraitEstimator):
                 )
             )
 
+        print(judge_scores)
         return (
-            (judge_scores["coherence"] >= 50) & (judge_scores[self.args.trait] > 50)
+            (judge_scores["coherence"] >= 50) & (judge_scores[self.args.trait] >= 50)
         ).to(float)
 
     def create_reward_function(self, prompt: str) -> Callable:

@@ -81,7 +81,7 @@ class OpenAiJudge:
         )
         try:
             logprobs = completion.choices[0].logprobs.content[0].top_logprobs
-            print(logprobs)
+            # print(logprobs)
         except Exception as e:
             # This should not happen according to the API docs. But it sometimes does.
             print(f"EXCEPTION ENCOUNTERED: {e}")
@@ -118,9 +118,9 @@ class OpenAiJudge:
             sum_ += int_key * val
             total += val
 
-        if total < 0.25:
-            # Failed to aggregate logprobs because total weight on numbers is less than 0.25.
-            return None
+            if total < 0.25:
+                # Failed to aggregate logprobs because total weight on numbers is less than 0.25.
+                return -1
         return sum_ / total
 
     def _aggregate_0_10_score(self, score: dict) -> float:
@@ -193,7 +193,7 @@ class OpenAiJudge:
         else:
             num_batches = ((len(questions) - 1) // MAX_BATCH_SIZE) + 1
             chunk_size = math.ceil(len(questions) / num_batches)
-            batched_judge_scores = Parallel(n_jobs=1, prefer="threads")(
+            batched_judge_scores = Parallel(n_jobs=10, prefer="threads")(
                 delayed(self._batch_judge)(
                     questions[i * chunk_size : (i + 1) * chunk_size],
                     answers[i * chunk_size : (i + 1) * chunk_size],

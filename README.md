@@ -1,15 +1,27 @@
-##  StrongREJECT Installation
+##  Setup
 
 ```bash
 pip install git+https://github.com/dsbowen/strong_reject.git@main 
 ```
 
-## Monte Carlo estimation
+```bash 
+EXPORT TOGETHER_API_KEY=...
+```
+```
 
+## Download Monte Carlo Estimates
+
+```bash
+hf download rangell/mc_estimates --repo-type dataset --local-dir monte_carlo_estimates/results/
+```
+
+## Monte Carlo estimation
 
 ### StrongREJECT
 
-[TODO]
+```bash
+python monte_carlo_estimates/src/strong_reject/generate_jailbreak_responses_fast.py --target-model meta-llama/Llama-3.1-8B-Instruct --num-return-sequences 10000 --output-dir monte_carlo_estimates/results/strong_reject/
+```
 
 ### Persona Vectors
 
@@ -25,7 +37,6 @@ To generate the persona vectors, run the following
 ```bash
 python -m persona_vectors.gen_vec_pipeline --model meta-llama/Llama-3.1-8B-Instruct --trait sycophantic
 ```
-We modify the original `persona_vectors` repo to minimally ablate refusal to prevent refusals during persona generations.
 
 Find out which layer and coefficient work best (often the middle layer and coeff between 1.0 and 2.0)
 ```bash
@@ -33,7 +44,7 @@ python -m persona_vectors.eval.eval_persona --model meta-llama/Llama-3.1-8B-Inst
 ```
 
 
-## Rare event estimation
+## Rare Event Estimation
 
 ### Estimating harm example
 ```bash
@@ -44,3 +55,12 @@ python -m smc.est_unsafe_to_unsafe --model_name meta-llama/Llama-3.2-1B-Instruct
 ```bash
 python -m smc.est_persona --model_name meta-llama/Llama-3.2-1B-Instruct --mc_est_dataset monte_carlo_estimates/results/persona_vectors/evil/Llama-3.2-1B-Instruct-mc_est-1k.json --num_particles 100 --fwd_batch_size=100 --proposal_idx_switch 20 --max_new_tokens 1000 --trait "evil" --steering_type response --steering_coef 1.0 --steering_vector_path persona_vectors/persona_vectors/Llama-3.2-1B-Instruct/evil_response_avg_diff.pt --steering_layer 8
 ```
+
+
+
+### TODO
+* Add `uv` for environment creation
+* Add debug mode (logging, no saving, ...)
+* Fix tokenization in estimator
+* Add cross-entropy method to tune hyperparameters
+* Clean-up strong reject fine-tuned judge

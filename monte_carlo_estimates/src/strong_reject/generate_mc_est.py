@@ -85,7 +85,6 @@ if __name__ == "__main__":
         tensor_parallel_size=torch.cuda.device_count(),
         max_num_seqs=1000,
         gpu_memory_utilization=0.9,
-        dtype=torch.bfloat16,
     )
 
     # generate responses
