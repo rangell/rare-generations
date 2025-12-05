@@ -61,7 +61,6 @@ class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
                     input_ids, skip_special_tokens=True
                 ),
             )
-
             return scores
 
         return reward_fn
@@ -161,6 +160,8 @@ def main(args):
         _, outputs = estimator.estimate_harmful_trait(
             prompt=example["forbidden_prompt"]
         )
+        
+        # import pdb; pdb.set_trace()
 
         print("\n-----------------------------------------------\n")
 
@@ -168,7 +169,7 @@ def main(args):
             model_output_dict[prompt_idx][key] = outputs[key]
 
         if prompt_idx % 5 == 0:
-            with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
+            with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:                
                 pickle.dump(model_output_dict, f)
 
     with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
