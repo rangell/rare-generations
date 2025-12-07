@@ -1,5 +1,5 @@
+import re
 import os
-from collections import defaultdict
 import asyncio
 import json
 import logging
@@ -9,11 +9,12 @@ from tqdm import trange
 import random
 import subprocess
 
+from openai import AsyncOpenAI
 import torch
 from vllm import SamplingParams
 from vllm.lora.request import LoRARequest
 
-from persona_vectors.eval.model_utils import load_model, load_vllm_model
+from persona_vectors.eval.model_utils import load_model, load_vllm_model, free_model
 from persona_vectors.judge import OpenAiJudge
 from persona_vectors.activation_steer import ActivationSteerer
 from persona_vectors.eval.prompts import Prompts
@@ -21,6 +22,7 @@ from persona_vectors.config import setup_credentials
 
 from refusal_direction.pipeline.utils.hook_utils import add_hooks
 from smc.model_utils import load_refusal_direction, get_all_direction_ablation_hooks
+from smc.client import JudgeClient
 
 
 logging.getLogger("openai").setLevel(logging.WARNING)
@@ -60,7 +62,9 @@ def sample_steering(
     outputs = []
     for i in trange(0, len(prompts), bs):
         batch = prompts[i : i + bs]
-        tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True)
+        tokenized_batch = tokenizer(
+            batch, return_tensors="pt", padding=True, add_special_tokens=False
+        )
         tokenized_batch = {k: v.to(model.device) for k, v in tokenized_batch.items()}
         with ActivationSteerer(
             model, vector, coeff=coef, layer_idx=layer - 1, positions=steering_type
@@ -94,7 +98,6 @@ def sample_no_refusal(
     max_tokens=1000,
     temperature=1,
     min_tokens=1,
-    num_ablated_tokens=30,
 ):
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
@@ -111,7 +114,9 @@ def sample_no_refusal(
     outputs = []
     for i in trange(0, len(prompts), bs):
         batch = prompts[i : i + bs]
-        tokenized_batch = tokenizer(batch, return_tensors="pt", padding=True)
+        tokenized_batch = tokenizer(
+            batch, return_tensors="pt", padding=True, add_special_tokens=False
+        )
         tokenized_batch = {k: v.to(model.device) for k, v in tokenized_batch.items()}
         with (
             torch.no_grad(),
@@ -119,30 +124,8 @@ def sample_no_refusal(
                 module_forward_pre_hooks=fwd_pre_hooks, module_forward_hooks=fwd_hooks
             ),
         ):
-            prelim_output = model.generate(
-                **tokenized_batch,
-                do_sample=(temperature > 0),
-                temperature=temperature,
-                top_p=top_p,
-                max_new_tokens=num_ablated_tokens,
-                use_cache=True,
-                min_new_tokens=min_tokens,
-            )
-
-        attention_mask = tokenized_batch["attention_mask"]
-        real_batch_size = attention_mask.shape[0]
-        attention_mask = torch.cat(
-            (
-                attention_mask,
-                torch.ones(real_batch_size, num_ablated_tokens).to("cuda"),
-            ),
-            dim=1,
-        )
-
-        with torch.no_grad():
             output = model.generate(
-                input_ids=prelim_output,
-                attention_mask=attention_mask,
+                **tokenized_batch,
                 do_sample=(temperature > 0),
                 temperature=temperature,
                 top_p=top_p,
@@ -156,6 +139,7 @@ def sample_no_refusal(
             tokenizer.decode(o[prompt_len:], skip_special_tokens=True) for o in output
         ]
         outputs.extend(output)
+
     return prompts, outputs
 
 
@@ -197,6 +181,7 @@ def sample(
     else:
         completions = model.generate(texts, **generate_kwargs)
     answers = [completion.outputs[0].text for completion in completions]
+
     return texts, answers
 
 
@@ -355,7 +340,7 @@ def load_persona_questions(
     return questions
 
 
-def eval_batched(
+async def eval_batched(
     questions,
     llm,
     tokenizer,
@@ -415,16 +400,15 @@ def eval_batched(
             max_tokens=max_tokens,
         )
 
-    busy_gpu_process = subprocess.Popen(["python", "misc/run_50xALL.py"])
+    # Make space for the judge model to run locally
+    free_model(llm)
 
     # Prepare data structures for batch evaluation
     question_dfs = []
-    judges_by_metric = {}
-    questions_by_metric = defaultdict(list)
-    answers_by_metric = defaultdict(list)
-    indices_by_metric = defaultdict(list)
+    all_judge_tasks = []
+    all_judge_indices = []  # Store (question_idx, metric, sample_idx) for each task
 
-    print("Preparing judge evaluation tasks...")
+    print("Preparing judge evaluation tasks...", end="\r\n")
     for i, question in enumerate(questions):
         # Get this question's data
         indices = [j for j, idx in enumerate(question_indices) if idx == i]
@@ -450,27 +434,50 @@ def eval_batched(
 
         # Collect all judge tasks
         for metric, judge in question.judges.items():
-            judges_by_metric[metric] = judge
             for sample_idx, (question_text, answer) in enumerate(
                 zip(q_paraphrases, q_answers)
             ):
-                questions_by_metric[metric].append(question_text)
-                answers_by_metric[metric].append(answer)
-                indices_by_metric[metric].append((i, sample_idx))
+                all_judge_tasks.append((judge, question_text, answer))
+                all_judge_indices.append((i, metric, sample_idx))
 
-    # Batch judge calls
-    for metric, judge in judges_by_metric.items():
-        print(f"Scoring responses with respect to {metric}...")
-        judge_scores = judge.batch_judge(
-            questions=questions_by_metric[metric], answers=answers_by_metric[metric]
-        )
-        for score, (question_idx, sample_idx) in zip(
-            judge_scores, indices_by_metric[metric]
-        ):
-            question_dfs[question_idx].loc[sample_idx, metric] = score
+    # Run judge evaluations with concurrency control
+    print(
+        f"Running {len(all_judge_tasks)} judge evaluations with max {max_concurrent_judges} concurrent requests...",
+        end="\r\n",
+    )
+    all_results = [None] * len(all_judge_tasks)  # Pre-allocate results array
 
-    busy_gpu_process.terminate()
-    busy_gpu_process.wait()
+    # Create a semaphore to limit concurrency
+    semaphore = asyncio.Semaphore(max_concurrent_judges)
+
+    launch_script_path = "launch_judge_local.sh"
+    with JudgeClient(launch_script_path, verbose=True) as client:
+
+        async def run_with_semaphore(task_idx, judge, question_text, answer):
+            async with semaphore:
+                result = await judge(
+                    client=client, question=question_text, answer=answer
+                )
+                return task_idx, result
+
+        # Create all tasks with semaphore control
+        tasks = [
+            run_with_semaphore(task_idx, judge, question_text, answer)
+            for task_idx, (judge, question_text, answer) in enumerate(all_judge_tasks)
+        ]
+
+        # Process tasks in batches with progress bar
+        with tqdm(total=len(tasks), desc="Judge evaluations") as pbar:
+            for task in asyncio.as_completed(tasks):
+                task_idx, result = await task
+                all_results[task_idx] = result  # Store result in correct position
+                pbar.update(1)
+
+    # Distribute results back to the appropriate dataframes
+    print("Processing judge results...", end="\r\n")
+    for task_idx, result in enumerate(all_results):
+        question_idx, metric, sample_idx = all_judge_indices[task_idx]
+        question_dfs[question_idx].loc[sample_idx, metric] = result
 
     return question_dfs
 
@@ -554,20 +561,22 @@ def main(
 
     if batch_process:
         print(f"Batch processing {len(questions)} '{trait}' questions...")
-        outputs_list = eval_batched(
-            questions,
-            llm,
-            tokenizer,
-            coef,
-            fwd_pre_hooks=ablation_fwd_pre_hooks,
-            fwd_hooks=ablation_fwd_hooks,
-            vector=vector,
-            layer=layer,
-            n_per_question=n_per_question,
-            max_concurrent_judges=max_concurrent_judges,
-            max_tokens=max_tokens,
-            steering_type=steering_type,
-            lora_path=lora_path,
+        outputs_list = asyncio.run(
+            eval_batched(
+                questions,
+                llm,
+                tokenizer,
+                coef,
+                fwd_pre_hooks=ablation_fwd_pre_hooks,
+                fwd_hooks=ablation_fwd_hooks,
+                vector=vector,
+                layer=layer,
+                n_per_question=n_per_question,
+                max_concurrent_judges=max_concurrent_judges,
+                max_tokens=max_tokens,
+                steering_type=steering_type,
+                lora_path=lora_path,
+            )
         )
         outputs = pd.concat(outputs_list)
     else:
@@ -593,13 +602,14 @@ def main(
             )
         outputs = pd.concat(outputs)
 
-    print(output_path)
-    outputs.to_csv(output_path, index=False)
     for t in [trait, "coherence"]:
         print(f"{t}:  {outputs[t].mean():.2f} +- {outputs[t].std():.2f}")
 
     success_rate = ((outputs[trait] >= 50) & (outputs["coherence"] >= 50)).mean()
     print(f"Success_rate: {success_rate}")
+
+    print(output_path)
+    outputs.to_csv(output_path, index=False)
 
     return success_rate
 

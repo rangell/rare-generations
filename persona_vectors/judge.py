@@ -8,7 +8,6 @@ from typing import List
 from joblib import Parallel, delayed
 
 from together import Together
-from openai import AsyncOpenAI
 
 from persona_vectors.config import setup_credentials
 
@@ -17,12 +16,6 @@ MAX_BATCH_SIZE = 5000
 
 # Set up credentials and environment
 config = setup_credentials()
-# openai = AsyncOpenAI()
-
-client = AsyncOpenAI(
-    api_key=os.environ.get("TOGETHER_API_KEY"),
-    base_url="https://api.together.xyz/v1",
-)
 
 
 class OpenAiJudge:
@@ -32,12 +25,9 @@ class OpenAiJudge:
 
     def __init__(self, model: str, prompt_template: str, eval_type: str = "0_100"):
         self.model = model
-        assert eval_type in [
-            "0_100",
-            "0_10",
-            "binary",
-            "binary_text",
-        ], "eval_type must be either 0_100 or binary"
+        assert eval_type in ["0_100", "0_10", "binary", "binary_text"], (
+            "eval_type must be either 0_100 or binary"
+        )
         self.eval_type = eval_type
 
         if self.eval_type == "0_100":
@@ -53,38 +43,47 @@ class OpenAiJudge:
 
         self.prompt_template = prompt_template
 
-    async def judge(self, **kwargs):
+    async def judge(self, client, **kwargs):
         messages = [dict(role="user", content=self.prompt_template.format(**kwargs))]
         if self.eval_type == "binary_text":
-            response_text = await self.query_full_text(messages)
+            response_text = await self.query_full_text(client, messages)
             score = self.aggregate_score(
                 response_text
             )  # aggregate_score is _aggregate_binary_text_score
         else:
-            logprobs = await self.logprob_probs(messages)
+            logprobs = await self.logprob_probs(client, messages)
             score = self.aggregate_score(
                 logprobs
             )  # aggregate_score is one of the other three
         return score
 
-    async def logprob_probs(self, messages) -> dict:
+    async def logprob_probs(self, client, messages) -> dict:
         """Simple logprobs request. Returns probabilities. Always samples 1 token."""
-        completion = await client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=1,
-            temperature=0,
-            logprobs=True,
-            top_logprobs=1,
-            seed=0,
-            timeout=60.0,
-        )
+        while True:
+            try:
+                completion = await client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=10000,
+                    temperature=0,
+                    logprobs=True,
+                    top_logprobs=20,
+                    seed=0,
+                    timeout=60.0,
+                )
+                break
+            except Exception as e:
+                continue
+                print(f"Exception: {e}")
+
         try:
-            logprobs = completion.choices[0].logprobs.content[0].top_logprobs
-            # print(logprobs)
-        except Exception as e:
+            ## for instruct models
+            # logprobs = completion.choices[0].logprobs.content[0].top_logprobs
+
+            # for reasoning models
+            logprobs = completion.choices[0].logprobs.content[-2].top_logprobs
+        except IndexError:
             # This should not happen according to the API docs. But it sometimes does.
-            print(f"EXCEPTION ENCOUNTERED: {e}")
             return {}
 
         result = {}
@@ -93,7 +92,7 @@ class OpenAiJudge:
 
         return result
 
-    async def query_full_text(self, messages) -> str:
+    async def query_full_text(self, client, messages) -> str:
         """Requests a full text completion. Used for binary_text eval_type."""
         completion = await client.chat.completions.create(
             model=self.model, messages=messages, temperature=0, seed=0
@@ -118,9 +117,9 @@ class OpenAiJudge:
             sum_ += int_key * val
             total += val
 
-            if total < 0.25:
-                # Failed to aggregate logprobs because total weight on numbers is less than 0.25.
-                return -1
+        if total < 0.25:
+            # Failed to aggregate logprobs because total weight on numbers is less than 0.25.
+            return None
         return sum_ / total
 
     def _aggregate_0_10_score(self, score: dict) -> float:

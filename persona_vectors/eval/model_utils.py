@@ -1,3 +1,4 @@
+import gc
 from pathlib import Path
 import os, re, json, torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -11,7 +12,6 @@ def get_free_port():
         return s.getsockname()[1]
 
 
-# ---------- 工具 ----------
 _CHECKPOINT_RE = re.compile(r"checkpoint-(\d+)")
 
 
@@ -116,3 +116,12 @@ def load_vllm_model(model_path: str):
     tok.pad_token_id = tok.eos_token_id
     tok.padding_side = "left"
     return llm, tok, lora_path
+
+
+def free_model(llm):
+    if hasattr(llm, "llm_engine"):
+        llm.llm_engine.engine_core.shutdown()
+
+    del llm
+    gc.collect()
+    torch.cuda.empty_cache()

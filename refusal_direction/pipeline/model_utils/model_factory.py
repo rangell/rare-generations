@@ -34,6 +34,7 @@ def construct_model_base(model_name_or_path: str) -> ModelBase:
             for family in [
                 "llama-3",
                 "qwen2.5",
+                "qwen3",
                 "gemma-2",
                 "phi-4",
                 "mistral",

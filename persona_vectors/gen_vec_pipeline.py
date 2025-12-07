@@ -6,8 +6,12 @@ from persona_vectors.eval.eval_persona import main as eval_persona_extract
 from persona_vectors.generate_vec import save_persona_vector
 
 
-def main(model, trait, judge_model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"):
+def main(model, trait, judge_model="openai/gpt-oss-120b"):
     model_shortname = model.split("/")[1]
+
+    # Set refusal_ablation and ablation_intensity here!
+    ablate_refusal = True
+    ablation_intensity = 0.5
 
     persona_instruction_type = "pos"
     pos_output_path = f"persona_vectors/eval_persona_extract/{model_shortname}/{trait}_{persona_instruction_type}_instruct.csv"
@@ -16,8 +20,8 @@ def main(model, trait, judge_model="meta-llama/Llama-4-Maverick-17B-128E-Instruc
         model,
         trait,
         pos_output_path,
-        ablate_refusal=False,
-        ablation_intensity=0.0,
+        ablate_refusal=ablate_refusal,
+        ablation_intensity=ablation_intensity,
         max_tokens=1000,
         n_per_question=10,
         batch_process=True,
@@ -58,7 +62,15 @@ def main(model, trait, judge_model="meta-llama/Llama-4-Maverick-17B-128E-Instruc
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     save_dir = f"persona_vectors/persona_vectors/{model_shortname}/"
-    save_persona_vector(model, pos_output_path, neg_output_path, trait, save_dir)
+    save_persona_vector(
+        model,
+        pos_output_path,
+        neg_output_path,
+        trait,
+        save_dir,
+        ablate_refusal=ablate_refusal,
+        ablation_intensity=ablation_intensity,
+    )
 
 
 if __name__ == "__main__":

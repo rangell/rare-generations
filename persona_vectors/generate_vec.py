@@ -7,6 +7,13 @@ import os
 import argparse
 import pandas as pd
 
+from refusal_direction.pipeline.utils.hook_utils import add_hooks
+from smc.model_utils import (
+    load_refusal_direction,
+    get_all_direction_ablation_hooks,
+    load_model_and_tokenizer,
+)
+
 
 def load_jsonl(file_path):
     with open(file_path, "r") as f:
@@ -80,9 +87,31 @@ def get_persona_effective(pos_path, neg_path, trait, threshold=50):
     )
 
 
-def save_persona_vector(model_name, pos_path, neg_path, trait, save_dir, threshold=50):
-    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+def save_persona_vector(
+    model_name,
+    pos_path,
+    neg_path,
+    trait,
+    save_dir,
+    ablate_refusal=False,
+    ablation_intensity=0.1,
+    threshold=50,
+):
+    model, tokenizer = load_model_and_tokenizer(model_name)
+
+    if not ablate_refusal:
+        ablation_intensity = 0.0
+
+    model_shortname = model_name.split("/")[1]
+    refusal_direction_path = f"refusal_direction/pipeline/runs/{model_shortname}/"
+    refusal_direction = load_refusal_direction(refusal_direction_path)
+
+    # Construct torch hooks for ablating refusal
+    ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(
+        model,
+        refusal_direction["direction"],
+        ablation_intensity=ablation_intensity,
+    )
 
     (
         persona_pos_effective,
@@ -97,13 +126,23 @@ def save_persona_vector(model_name, pos_path, neg_path, trait, save_dir, thresho
     persona_effective_prompt_last = {}
     persona_effective_response_avg = {}
 
-    (
-        persona_effective_prompt_avg["pos"],
-        persona_effective_prompt_last["pos"],
-        persona_effective_response_avg["pos"],
-    ) = get_hidden_p_and_r(
-        model, tokenizer, persona_pos_effective_prompts, persona_pos_effective_responses
-    )
+    with (
+        torch.no_grad(),
+        add_hooks(
+            module_forward_pre_hooks=ablation_fwd_pre_hooks,
+            module_forward_hooks=ablation_fwd_hooks,
+        ),
+    ):
+        (
+            persona_effective_prompt_avg["pos"],
+            persona_effective_prompt_last["pos"],
+            persona_effective_response_avg["pos"],
+        ) = get_hidden_p_and_r(
+            model,
+            tokenizer,
+            persona_pos_effective_prompts,
+            persona_pos_effective_responses,
+        )
 
     gc.collect()
     torch.cuda.empty_cache()
