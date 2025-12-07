@@ -83,6 +83,9 @@ def main(args):
     print("\n-----------------------------------------------\n")
 
     output_dir = args.output_dir
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)        
+        
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(output_dir) / args.model_shortname / timestamp
 

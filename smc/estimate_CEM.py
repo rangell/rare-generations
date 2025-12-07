@@ -92,7 +92,6 @@ def main(args):
     )
 
     cem_model_output_path = Path(
-    #   "/gpfs/data/ranganathlab/singhr36/rare-generations/model_output/Llama-3.2-1B-Instruct/20251204_181107"
       "/gpfs/data/ranganathlab/singhr36/rare-generations/model_output/Llama-3.2-1B-Instruct/20251205_142551"
     )
 
