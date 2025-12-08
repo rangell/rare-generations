@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
-from copy import deepcopy
+
+# from copy import deepcopy
+import copy
 import gc
 import math
 from typing import List, Optional, Callable, ContextManager, Dict
@@ -97,18 +99,14 @@ class HarmfulTraitEstimator(ABC):
             else:
                 chunked_past_key_values = []
                 for batch_indices in chunk_indices:
-                    # TODO: this should be a shallow copy
-                    cache = deepcopy(past_key_values)
+                    cache = copy.deepcopy(past_key_values)
                     for layer_idx in range(self.model.config.num_hidden_layers):
-                        batch_layer_key_cache = past_key_values[layer_idx][0][
-                            batch_indices
-                        ]
-                        batch_layer_value_cache = past_key_values[layer_idx][1][
-                            batch_indices
-                        ]
-                        cache.update(
-                            batch_layer_key_cache, batch_layer_value_cache, layer_idx
-                        )
+                        cache.layers[layer_idx].keys = past_key_values.layers[
+                            layer_idx
+                        ].keys[batch_indices]
+                        cache.layers[layer_idx].values = past_key_values.layers[
+                            layer_idx
+                        ].values[batch_indices]
                     chunked_past_key_values.append(cache)
 
             del past_key_values
@@ -132,22 +130,21 @@ class HarmfulTraitEstimator(ABC):
 
         # Reassemble the cache
         if num_batches > 1:
-            past_key_values = type(chunked_past_key_values[0])()
+            past_key_values = copy.deepcopy(chunked_past_key_values[0])
             for layer_idx in range(self.model.config.num_hidden_layers):
                 layer_key_cache = torch.cat(
-                    [cache.key_cache[layer_idx] for cache in chunked_past_key_values],
+                    [cache.layers[layer_idx].keys for cache in chunked_past_key_values],
                     dim=0,
                 )
                 layer_value_cache = torch.cat(
-                    [cache.value_cache[layer_idx] for cache in chunked_past_key_values],
+                    [
+                        cache.layers[layer_idx].values
+                        for cache in chunked_past_key_values
+                    ],
                     dim=0,
                 )
-                past_key_values.update(layer_key_cache, layer_value_cache, layer_idx)
-
-            if isinstance(chunked_past_key_values[0], OffloadedCache):
-                past_key_values.original_device = chunked_past_key_values[
-                    0
-                ].original_device
+                past_key_values.layers[layer_idx].keys = layer_key_cache
+                past_key_values.layers[layer_idx].values = layer_value_cache
 
             for cache in chunked_past_key_values:
                 del cache
@@ -322,16 +319,21 @@ class HarmfulTraitEstimator(ABC):
 
                 resample_indices = fk_class(
                     step_idx=generation_idx,
-                    importance_weights=deepcopy(p_q_t),
-                    sequences=deepcopy(_input_ids),
-                    rs_candidates=deepcopy(rs_candidates),
+                    importance_weights=copy.deepcopy(p_q_t),
+                    sequences=copy.deepcopy(_input_ids),
+                    rs_candidates=copy.deepcopy(rs_candidates),
                 )
 
-                base_past_key_values = update_cache_after_resampling(
-                    past_key_values=base_past_key_values,
-                    indices=resample_indices,
-                    model_config=self.model.config,
-                )
+                if (
+                    not (resample_indices.cpu() == torch.arange(num_particles))
+                    .all()
+                    .item()
+                ):
+                    base_past_key_values = update_cache_after_resampling(
+                        past_key_values=base_past_key_values,
+                        indices=resample_indices,
+                        model_config=self.model.config,
+                    )
 
                 if (
                     generation_idx in fk_class.resampling_arr
@@ -347,17 +349,17 @@ class HarmfulTraitEstimator(ABC):
                         (num_particles,),
                     )
 
-                    _input_ids = deepcopy(_input_ids[resample_indices])
-                    _attention_mask = deepcopy(_attention_mask[resample_indices])
+                    _input_ids = copy.deepcopy(_input_ids[resample_indices])
+                    _attention_mask = copy.deepcopy(_attention_mask[resample_indices])
                     _inputs = {
                         "input_ids": next_tokens[resample_indices],
                         "attention_mask": _attention_mask,
                     }
 
-                    _completed_generation = deepcopy(
+                    _completed_generation = copy.deepcopy(
                         _completed_generation[resample_indices]
                     )
-                    log_importance_weights = deepcopy(
+                    log_importance_weights = copy.deepcopy(
                         log_importance_weights[resample_indices]
                     )
 
@@ -381,6 +383,11 @@ class HarmfulTraitEstimator(ABC):
                 break
 
             ### END OF GENERATION LOOP
+
+        del base_past_key_values
+        del proposal_past_key_values
+        gc.collect()
+        torch.cuda.empty_cache()
 
         importance_weights = log_importance_weights.exp()
 
@@ -439,6 +446,9 @@ class HarmfulTraitEstimator(ABC):
         if self.smc_args is not None and self.smc_args["use_smc"]:
             for key in smc_quantities:
                 ret[key] = smc_quantities[key]
+
+        gc.collect()
+        torch.cuda.empty_cache()
 
         return ret
 

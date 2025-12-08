@@ -33,8 +33,9 @@ def _sr_harmful_reward_fn(forbidden_prompt, responses):
             enable_lora=True,
             tensor_parallel_size=torch.cuda.device_count(),
             max_num_seqs=1000,
-            gpu_memory_utilization=0.9,
+            gpu_memory_utilization=0.5,
             dtype=torch.bfloat16,
+            enforce_eager=True,
         )
         tokenizer = model.get_tokenizer()
         tokenizer.pad_token = tokenizer.eos_token

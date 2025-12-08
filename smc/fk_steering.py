@@ -1,4 +1,3 @@
-from copy import deepcopy
 import numpy as np
 import torch
 from typing import Optional
@@ -10,33 +9,11 @@ def update_cache_after_resampling(
     indices: torch.Tensor,
     model_config,
 ):
-    # TODO: this should be a shallow copy
-    new_past_key_values = deepcopy(past_key_values)
     indices = indices.cpu()
-    for layer_idx in range(model_config.num_hidden_layers):
-        keys = past_key_values[layer_idx][0]
-        values = past_key_values[layer_idx][1]
-
-        resampled_keys = deepcopy(keys[indices])
-        resampled_values = deepcopy(values[indices])
-
-        assert resampled_keys.shape == keys.shape, (
-            resampled_keys.shape,
-            keys.shape,
-            layer_idx,
-        )
-        assert resampled_values.shape == values.shape, (
-            resampled_values.shape,
-            values.shape,
-            layer_idx,
-        )
-
-        new_past_key_values.update(resampled_keys, resampled_values, layer_idx)
-        del keys, values, resampled_keys, resampled_values
-
-    del past_key_values
-    past_key_values = new_past_key_values
-
+    for layer in past_key_values.layers:
+        # NOTE: in general this is super dangerous, but ok in this situation
+        layer.keys = layer.keys[indices]
+        layer.values = layer.values[indices]
     return past_key_values
 
 
@@ -289,9 +266,9 @@ class FKSteering:
     def get_fk_quantities(self):
         assert self.potential_type == "diff"
 
-        assert self.potential_type == "diff", (
-            "FK estimate only available for 'diff' potential type"
-        )
+        assert (
+            self.potential_type == "diff"
+        ), "FK estimate only available for 'diff' potential type"
 
         arr_potential_values = torch.stack(self.arr_potential_values, dim=1)
 
@@ -325,9 +302,9 @@ class FKSteering:
     def compute_fk_estimate(self, test_function_values, importance_weights):
         assert self.potential_type == "diff"
 
-        assert self.potential_type == "diff", (
-            "FK estimate only available for 'diff' potential type"
-        )
+        assert (
+            self.potential_type == "diff"
+        ), "FK estimate only available for 'diff' potential type"
 
         arr_potential_values = torch.stack(self.arr_potential_values, dim=1)
 

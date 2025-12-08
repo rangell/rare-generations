@@ -84,8 +84,8 @@ def main(args):
 
     output_dir = args.output_dir
     if not os.path.exists(output_dir):
-        os.makedirs(output_dir)        
-        
+        os.makedirs(output_dir)
+
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(output_dir) / args.model_shortname / timestamp
 
@@ -150,11 +150,11 @@ def main(args):
 
     model_output_dict = {}
 
-    for prompt_idx, example in enumerate(tqdm(mc_dataset)):
+    for prompt_idx, example in enumerate(mc_dataset):
         model_output_dict[prompt_idx] = {}
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
-        print(f"Forbidden prompt: {example['forbidden_prompt']}")
+        print(f"Forbidden prompt ({prompt_idx}/...): {example['forbidden_prompt']}")
         print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
 
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
@@ -163,8 +163,6 @@ def main(args):
         _, outputs = estimator.estimate_harmful_trait(
             prompt=example["forbidden_prompt"]
         )
-        
-        # import pdb; pdb.set_trace()
 
         print("\n-----------------------------------------------\n")
 
@@ -172,7 +170,7 @@ def main(args):
             model_output_dict[prompt_idx][key] = outputs[key]
 
         if prompt_idx % 5 == 0:
-            with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:                
+            with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
                 pickle.dump(model_output_dict, f)
 
     with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
