@@ -97,21 +97,18 @@ class HarmfulTraitEstimator(ABC):
             else:
                 chunked_past_key_values = []
                 for batch_indices in chunk_indices:
-                    cache = type(past_key_values)()
+                    # TODO: this should be a shallow copy
+                    cache = deepcopy(past_key_values)
                     for layer_idx in range(self.model.config.num_hidden_layers):
-                        batch_layer_key_cache = past_key_values.key_cache[layer_idx][
+                        batch_layer_key_cache = past_key_values[layer_idx][0][
                             batch_indices
                         ]
-                        batch_layer_value_cache = past_key_values.value_cache[
-                            layer_idx
-                        ][batch_indices]
+                        batch_layer_value_cache = past_key_values[layer_idx][1][
+                            batch_indices
+                        ]
                         cache.update(
                             batch_layer_key_cache, batch_layer_value_cache, layer_idx
                         )
-
-                    if isinstance(past_key_values, OffloadedCache):
-                        cache.original_device = past_key_values.original_device
-
                     chunked_past_key_values.append(cache)
 
             del past_key_values
@@ -169,12 +166,8 @@ class HarmfulTraitEstimator(ABC):
         """Implements rare event estimation using sequential Monte Carlo."""
         assert prompt != ""
 
-        if self.args.low_vram_cache:
-            base_past_key_values = OffloadedCache()
-            proposal_past_key_values = OffloadedCache()
-        else:
-            base_past_key_values = DynamicCache()
-            proposal_past_key_values = DynamicCache()
+        base_past_key_values = DynamicCache(offloading=self.args.low_vram_cache)
+        proposal_past_key_values = DynamicCache(offloading=self.args.low_vram_cache)
 
         num_particles = input_ids.shape[0]
 
