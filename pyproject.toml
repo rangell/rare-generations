@@ -14,5 +14,10 @@ dependencies = [
     "pandas>=2.3.3",
     "peft>=0.18.0",
     "together>=1.5.31",
+    "transformers",
     "vllm==0.10.2",
 ]
+
+[tool.uv.sources]
+transformers = { git = "https://github.com/rangell/transformers", branch = "cache_fix" }
+
