@@ -1,5 +1,7 @@
 ##  Setup
 
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/)
+
 
 ## Download Monte Carlo Estimates
 
@@ -52,7 +54,6 @@ uv run --module smc.est_persona --model_name Qwen/Qwen3-4B-Instruct-2507 --mc_es
 
 
 ### TODO
-* Add `uv` for environment creation
 * Add debug mode (logging, no saving, ...)
 * Fix tokenization in estimator
 * Add cross-entropy method to tune hyperparameters
