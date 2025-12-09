@@ -19,6 +19,19 @@ class HarmfulTraitEstimator(ABC):
         self.tokenizer = tokenizer
         self.smc_args = smc_args
 
+        def token_exists(id):
+            try:
+                self.tokenizer.decode(id)
+                return 1
+            except TypeError:
+                return 0
+
+        self.vocab_mask = torch.tensor(
+            list(map(token_exists, range(self.model.vocab_size))),
+            dtype=torch.bool,
+            device="cuda",
+        )
+
     @abstractmethod
     def proposal_context_manager(self, timestep: int) -> ContextManager:
         """We require that this function returns a context manager."""
@@ -135,7 +148,6 @@ class HarmfulTraitEstimator(ABC):
                 past_key_values=batch_past_key_values,
                 **kwargs,
             )
-            # TODO: fix this for Qwen with vocab size
             _batch_outputs.logits = _batch_outputs.logits[:, -1, :]
             batched_outputs.append(_batch_outputs)
 
@@ -248,7 +260,7 @@ class HarmfulTraitEstimator(ABC):
                     return_dict_in_generate=True,
                     output_hidden_states=False,
                 )
-            base_logprobs = torch.log_softmax(base_logits, dim=-1)
+            base_logprobs = torch.log_softmax(base_logits[:, self.vocab_mask], dim=-1)
 
             if generation_idx < self.args.proposal_idx_switch:
                 # Compute the proposal distribution
@@ -266,7 +278,9 @@ class HarmfulTraitEstimator(ABC):
                             output_hidden_states=False,
                         )
                     )
-                proposal_logprobs = torch.log_softmax(refusal_ablated_logits, dim=-1)
+                proposal_logprobs = torch.log_softmax(
+                    refusal_ablated_logits[:, self.vocab_mask], dim=-1
+                )
 
                 # Linearly interpolate between distributions
                 proposal_logprobs = torch.log(
@@ -281,6 +295,7 @@ class HarmfulTraitEstimator(ABC):
                 proposal_logprobs.exp(),
                 num_samples=1,
             )
+            next_tokens = torch.where(self.vocab_mask)[0][next_tokens]
 
             # Check if sequence is completed
             _completed_generation |= next_tokens == self.tokenizer.eos_token_id

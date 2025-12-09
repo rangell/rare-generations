@@ -6,7 +6,6 @@ import os
 import datetime
 import random
 import time
-from tqdm.auto import tqdm
 import pickle
 
 from datasets import load_dataset
