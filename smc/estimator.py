@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 
-# from copy import deepcopy
 import copy
 import gc
 import math
@@ -8,7 +7,7 @@ from typing import List, Optional, Callable, ContextManager, Dict
 from tqdm import trange
 
 import torch
-from transformers import DynamicCache, OffloadedCache
+from transformers import DynamicCache
 
 from smc.fk_steering import FKSteering, update_cache_after_resampling
 
@@ -92,14 +91,19 @@ class HarmfulTraitEstimator(ABC):
         if num_batches > 1:
             # Chunk the cache
             chunk_indices = torch.arange(input_ids.shape[0]).chunk(num_batches)
-            if len(past_key_values) == 0:
+            if past_key_values.layers[0].keys is None:
                 chunked_past_key_values = [
-                    type(past_key_values)() for _ in range(num_batches)
+                    DynamicCache(
+                        config=self.model.config, offloading=self.args.low_vram_cache
+                    )
+                    for _ in range(num_batches)
                 ]
             else:
                 chunked_past_key_values = []
                 for batch_indices in chunk_indices:
-                    cache = copy.deepcopy(past_key_values)
+                    cache = DynamicCache(
+                        config=self.model.config, offloading=self.args.low_vram_cache
+                    )
                     for layer_idx in range(self.model.config.num_hidden_layers):
                         cache.layers[layer_idx].keys = past_key_values.layers[
                             layer_idx
@@ -107,6 +111,13 @@ class HarmfulTraitEstimator(ABC):
                         cache.layers[layer_idx].values = past_key_values.layers[
                             layer_idx
                         ].values[batch_indices]
+                        cache.layers[layer_idx].is_initialized = True
+                        cache.layers[layer_idx].dtype = past_key_values.layers[
+                            layer_idx
+                        ].dtype
+                        cache.layers[layer_idx].device = past_key_values.layers[
+                            layer_idx
+                        ].device
                     chunked_past_key_values.append(cache)
 
             del past_key_values
@@ -130,7 +141,9 @@ class HarmfulTraitEstimator(ABC):
 
         # Reassemble the cache
         if num_batches > 1:
-            past_key_values = copy.deepcopy(chunked_past_key_values[0])
+            past_key_values = DynamicCache(
+                config=self.model.config, offloading=self.args.low_vram_cache
+            )
             for layer_idx in range(self.model.config.num_hidden_layers):
                 layer_key_cache = torch.cat(
                     [cache.layers[layer_idx].keys for cache in chunked_past_key_values],
@@ -145,6 +158,13 @@ class HarmfulTraitEstimator(ABC):
                 )
                 past_key_values.layers[layer_idx].keys = layer_key_cache
                 past_key_values.layers[layer_idx].values = layer_value_cache
+                past_key_values.layers[layer_idx].is_initialized = True
+                past_key_values.layers[layer_idx].dtype = (
+                    chunked_past_key_values[0].layers[layer_idx].dtype
+                )
+                past_key_values.layers[layer_idx].device = (
+                    chunked_past_key_values[0].layers[layer_idx].device
+                )
 
             for cache in chunked_past_key_values:
                 del cache
@@ -163,8 +183,12 @@ class HarmfulTraitEstimator(ABC):
         """Implements rare event estimation using sequential Monte Carlo."""
         assert prompt != ""
 
-        base_past_key_values = DynamicCache(offloading=self.args.low_vram_cache)
-        proposal_past_key_values = DynamicCache(offloading=self.args.low_vram_cache)
+        base_past_key_values = DynamicCache(
+            config=self.model.config, offloading=self.args.low_vram_cache
+        )
+        proposal_past_key_values = DynamicCache(
+            config=self.model.config, offloading=self.args.low_vram_cache
+        )
 
         num_particles = input_ids.shape[0]
 
