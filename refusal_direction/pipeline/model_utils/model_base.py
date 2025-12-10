@@ -107,8 +107,8 @@ class ModelBase(ABC):
             truncation=False,
             add_special_tokens=False,
         )
-        inputs.input_ids = inputs.input_ids[:, 1:]
-        inputs.attention_mask = inputs.attention_mask[:, 1:]
+        inputs.input_ids = inputs.input_ids
+        inputs.attention_mask = inputs.attention_mask
 
         return inputs
 
@@ -133,12 +133,14 @@ class ModelBase(ABC):
             convos_w_generation_prompt,
             return_tensors="pt",
             padding=True,
+            truncation=False,
             add_special_tokens=False,
         )["input_ids"]
         input_ids_wo_generation_prompt = self.tokenizer(
             convos_wo_generation_prompt,
             return_tensors="pt",
             padding=True,
+            truncation=False,
             add_special_tokens=False,
         )["input_ids"]
 

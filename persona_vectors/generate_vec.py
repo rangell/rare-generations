@@ -1,5 +1,4 @@
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
 import gc
 import json
 import torch
@@ -29,6 +28,10 @@ def get_hidden_p_and_r(model, tokenizer, prompts, responses, layer_list=None):
     prompt_last = [[] for _ in range(max_layer + 1)]
     texts = [p + a for p, a in zip(prompts, responses)]
     for text, prompt in tqdm(zip(texts, prompts), total=len(texts)):
+        from IPython import embed
+
+        embed()
+        exit()
         inputs = tokenizer(text, return_tensors="pt", add_special_tokens=False).to(
             model.device
         )

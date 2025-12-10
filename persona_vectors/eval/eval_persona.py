@@ -1,4 +1,3 @@
-import re
 import os
 import asyncio
 import json
@@ -7,9 +6,7 @@ import pandas as pd
 from tqdm import tqdm
 from tqdm import trange
 import random
-import subprocess
 
-from openai import AsyncOpenAI
 import torch
 from vllm import SamplingParams
 from vllm.lora.request import LoRARequest
@@ -354,6 +351,7 @@ async def eval_batched(
     max_tokens=1000,
     steering_type="last",
     lora_path=None,
+    judge_launch_script="launch_judge_local.sh",
 ):
     """Batch process all questions together for faster inference"""
     # Collect all prompts from all questions
@@ -450,8 +448,7 @@ async def eval_batched(
     # Create a semaphore to limit concurrency
     semaphore = asyncio.Semaphore(max_concurrent_judges)
 
-    launch_script_path = "launch_judge_local.sh"
-    with JudgeClient(launch_script_path, verbose=True) as client:
+    with JudgeClient(judge_launch_script, verbose=True) as client:
 
         async def run_with_semaphore(task_idx, judge, question_text, answer):
             async with semaphore:
@@ -501,6 +498,7 @@ def main(
     judge_model="gpt-4.1-mini-2025-04-14",
     version="extract",
     overwrite=False,
+    judge_launch_script="launch_judge_local.sh",
 ):
     print("\nArguments:\n-----------------------------------------------\n")
     print("\n".join(f"{k}: {v}" for k, v in locals().items()))
@@ -576,6 +574,7 @@ def main(
                 max_tokens=max_tokens,
                 steering_type=steering_type,
                 lora_path=lora_path,
+                judge_launch_script=judge_launch_script,
             )
         )
         outputs = pd.concat(outputs_list)

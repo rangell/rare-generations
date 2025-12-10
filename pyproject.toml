@@ -11,11 +11,14 @@ dependencies = [
     "ipython>=9.8.0",
     "jaxtyping>=0.3.3",
     "joblib>=1.5.2",
+    "litellm>=1.80.9",
+    "matplotlib>=3.10.7",
     "pandas>=2.3.3",
     "peft>=0.18.0",
     "together>=1.5.31",
     "transformers",
     "vllm==0.10.2",
+    "zstandard>=0.25.0",
 ]
 
 [tool.uv.sources]

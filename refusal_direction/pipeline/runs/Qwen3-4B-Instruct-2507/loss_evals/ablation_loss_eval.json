@@ -1,17 +1,17 @@
 {
     "pile": {
-        "ce_loss": 2.2973500846929165,
-        "perplexity": 9.947786704749157,
+        "ce_loss": 2.297421952050099,
+        "perplexity": 9.948501651579805,
         "n_tokens": 904444
     },
     "alpaca": {
-        "ce_loss": 2.7960422222387296,
-        "perplexity": 16.379691138582128,
-        "n_tokens": 269242
+        "ce_loss": 2.7955755959499915,
+        "perplexity": 16.372049727075854,
+        "n_tokens": 269234
     },
     "alpaca_custom_completions": {
-        "ce_loss": 0.31319508129196716,
-        "perplexity": 1.3677883349180486,
-        "n_tokens": 32168
+        "ce_loss": 0.32207607238605895,
+        "perplexity": 1.3799897510774433,
+        "n_tokens": 31705
     }
 }
