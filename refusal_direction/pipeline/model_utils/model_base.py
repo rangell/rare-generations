@@ -101,7 +101,11 @@ class ModelBase(ABC):
             )
 
         inputs = self.tokenizer(
-            convos, return_tensors="pt", padding=True, truncation=False
+            convos,
+            return_tensors="pt",
+            padding=True,
+            truncation=False,
+            add_special_tokens=False,
         )
         inputs.input_ids = inputs.input_ids[:, 1:]
         inputs.attention_mask = inputs.attention_mask[:, 1:]
@@ -126,10 +130,16 @@ class ModelBase(ABC):
             messages, tokenize=False, continue_final_message=True
         )
         input_ids_w_generation_prompt = self.tokenizer(
-            convos_w_generation_prompt, return_tensors="pt", padding=True
+            convos_w_generation_prompt,
+            return_tensors="pt",
+            padding=True,
+            add_special_tokens=False,
         )["input_ids"]
         input_ids_wo_generation_prompt = self.tokenizer(
-            convos_wo_generation_prompt, return_tensors="pt", padding=True
+            convos_wo_generation_prompt,
+            return_tensors="pt",
+            padding=True,
+            add_special_tokens=False,
         )["input_ids"]
 
         eoi_toks = input_ids_w_generation_prompt[
