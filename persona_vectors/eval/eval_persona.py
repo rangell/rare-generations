@@ -21,9 +21,13 @@ from refusal_direction.pipeline.utils.hook_utils import add_hooks
 from smc.model_utils import load_refusal_direction, get_all_direction_ablation_hooks
 from smc.client import JudgeClient
 
+import nest_asyncio
+
+nest_asyncio.apply()
+
 
 logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # Set up credentials and environment
@@ -575,7 +579,8 @@ def main(
                 steering_type=steering_type,
                 lora_path=lora_path,
                 judge_launch_script=judge_launch_script,
-            )
+            ),
+            debug=True,
         )
         outputs = pd.concat(outputs_list)
     else:

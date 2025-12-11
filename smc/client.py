@@ -1,3 +1,4 @@
+import time
 import os
 import re
 import signal
@@ -34,6 +35,8 @@ class JudgeClient:
     def __enter__(self) -> AsyncOpenAI:
         # TODO: if launch_script_path is empty we try using together ai
         # TODO: tensor parallel size in launch script
+
+        busy_gpu_subprocess = subprocess.Popen(["python", "misc/run_50xALL.py"])
 
         command = ["sh", self.launch_script_path]
 
@@ -92,6 +95,10 @@ class JudgeClient:
         client = AsyncOpenAI(
             base_url=f"http://{ip_address}:8000/v1", api_key="sk-no-key-required"
         )
+
+        busy_gpu_subprocess.terminate()
+        busy_gpu_subprocess.wait()
+
         return client
 
     def __exit__(self, exc_type, exc_value, traceback) -> bool | None:
@@ -101,12 +108,14 @@ class JudgeClient:
 
         # Send SIGTERM to proc
         os.killpg(self.proc.pid, signal.SIGINT)
-        self.proc.wait(timeout=5)
+        time.sleep(5)
 
         if self.proc.poll() is None:
             self.proc.terminate()
-            self.proc.wait(timeout=5)
+            time.sleep(5)
             if self.proc.poll() is None:
                 self.proc.kill()
+
+        self.proc.wait()
 
         assert self.proc.poll() is not None

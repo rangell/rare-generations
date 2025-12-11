@@ -36,8 +36,8 @@ class PersonaEstimator(HarmfulTraitEstimator):
             self.model,
             self.persona_vector,
             coeff=self.args.steering_coef,
-            layer_idx=self.args.steering_layer - 1,
             positions=self.args.steering_type,
+            layer_idx=self.args.steering_layer - 1,
         )
 
     def judge_responses(self, prompt: str, responses: List[str]) -> torch.Tensor:

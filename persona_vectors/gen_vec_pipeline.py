@@ -1,13 +1,22 @@
 import os
 import gc
+import json
 import torch
+import logging
 import fire
 from itertools import product
 
 from transformers import AutoConfig
 
+import nest_asyncio
+
 from persona_vectors.eval.eval_persona import main as eval_persona_extract
 from persona_vectors.generate_vec import save_persona_vector
+
+nest_asyncio.apply()
+
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def main(model, trait, judge_model="openai/gpt-oss-120b"):
@@ -35,6 +44,7 @@ def main(model, trait, judge_model="openai/gpt-oss-120b"):
         judge_model=judge_model,
         version="extract",
         overwrite=True,
+        judge_launch_script="launch_judge_local.sh",
     )
 
     gc.collect()
@@ -75,7 +85,6 @@ def main(model, trait, judge_model="openai/gpt-oss-120b"):
         save_dir,
         ablate_refusal=ablate_refusal,
         ablation_intensity=ablation_intensity,
-        judge_launch_script="launch_judge_local.sh",
     )
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
@@ -83,7 +92,7 @@ def main(model, trait, judge_model="openai/gpt-oss-120b"):
     gc.collect()
     torch.cuda.empty_cache()
 
-    model_config = AutoConfig(model)
+    model_config = AutoConfig.from_pretrained(model)
 
     coefs = [1.0, 1.5, 2.0, 2.5, 3.0]
     layers = [
@@ -132,11 +141,13 @@ def main(model, trait, judge_model="openai/gpt-oss-120b"):
         "best_layer": best_layer,
     }
 
-    # Search over possible layers and coef
-    # uv run --module persona_vectors.eval.eval_persona
-    # --vector_path persona_vectors/persona_vectors/Qwen3-4B-Instruct-2507/sycophantic_response_avg_diff.pt
-    # --coef 2.0
-    # --layer 24
+    print("Best steering stats: ", json.dumps(steering_stats, indent=4))
+
+    with open(
+        f"persona_vectors/persona_vectors/{model_shortname}/{trait}_best_steering_stats.json",
+        "w",
+    ) as f:
+        json.dump(steering_stats, f)
 
 
 if __name__ == "__main__":
