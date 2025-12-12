@@ -1,5 +1,6 @@
 import os
 import json
+import weakref
 
 import torch
 from torch import Tensor
@@ -67,13 +68,12 @@ def get_all_direction_ablation_hooks(
     direction: Tensor,
     ablation_intensity: float = 1.0,
 ):
-    # NOTE: Only tested on Llama models for now (should be able to just change the following three variables for other models)
-    model_block_modules = model.model.layers
+    model_block_modules = weakref.proxy(model.model.layers)
     model_attn_modules = torch.nn.ModuleList(
-        [block_module.self_attn for block_module in model_block_modules]
+        [weakref.proxy(block_module.self_attn) for block_module in model_block_modules]
     )
     model_mlp_modules = torch.nn.ModuleList(
-        [block_module.mlp for block_module in model_block_modules]
+        [weakref.proxy(block_module.mlp) for block_module in model_block_modules]
     )
 
     fwd_pre_hooks = [

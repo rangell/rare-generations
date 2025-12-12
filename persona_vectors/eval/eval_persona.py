@@ -1,3 +1,4 @@
+import gc
 import os
 import asyncio
 import json
@@ -6,6 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 from tqdm import trange
 import random
+import weakref
 
 import torch
 from vllm import SamplingParams
@@ -356,6 +358,7 @@ async def eval_batched(
     steering_type="last",
     lora_path=None,
     judge_launch_script="launch_judge_local.sh",
+    free_gpu_memory=None,
 ):
     """Batch process all questions together for faster inference"""
     # Collect all prompts from all questions
@@ -403,7 +406,7 @@ async def eval_batched(
         )
 
     # Make space for the judge model to run locally
-    free_model(llm)
+    free_gpu_memory()
 
     # Prepare data structures for batch evaluation
     question_dfs = []
@@ -530,6 +533,16 @@ def main(
         vector = torch.load(vector_path, weights_only=False)[layer]
         ablation_fwd_pre_hooks = []
         ablation_fwd_hooks = []
+
+        def free_gpu_memory():
+            nonlocal llm, vector
+            llm = llm.to("cpu")
+            vector = vector.to("cpu")
+            del llm
+            del vector
+            gc.collect()
+            torch.cuda.empty_cache()
+
     elif ablate_refusal:
         llm, tokenizer = load_model(model)
         vector = None
@@ -542,15 +555,33 @@ def main(
 
         # Construct torch hooks for ablating refusal
         ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(
-            llm,
-            refusal_direction["direction"],
+            weakref.proxy(llm),
+            weakref.proxy(refusal_direction["direction"]),
             ablation_intensity=ablation_intensity,
         )
+
+        def free_gpu_memory():
+            nonlocal llm, refusal_direction
+            llm = llm.to("cpu")
+            refusal_direction["direction"] = refusal_direction["direction"].to("cpu")
+            del llm
+            del refusal_direction["direction"]
+            gc.collect()
+            torch.cuda.empty_cache()
+
     else:
         llm, tokenizer, lora_path = load_vllm_model(model)
         vector = None
         ablation_fwd_pre_hooks = []
         ablation_fwd_hooks = []
+
+        def free_gpu_memory():
+            nonlocal llm, refusal_direction
+            if hasattr(llm, "llm_engine"):
+                llm.llm_engine.engine_core.shutdown()
+            del llm
+            gc.collect()
+            torch.cuda.empty_cache()
 
     questions = load_persona_questions(
         trait,
@@ -579,6 +610,7 @@ def main(
                 steering_type=steering_type,
                 lora_path=lora_path,
                 judge_launch_script=judge_launch_script,
+                free_gpu_memory=free_gpu_memory,
             ),
             debug=True,
         )
