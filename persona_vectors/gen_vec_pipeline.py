@@ -24,7 +24,7 @@ def main(model, trait, judge_model="openai/gpt-oss-120b"):
 
     # Set refusal_ablation and ablation_intensity here!
     ablate_refusal = True
-    ablation_intensity = 0.5
+    ablation_intensity = 0.8
 
     persona_instruction_type = "pos"
     pos_output_path = f"persona_vectors/eval_persona_extract/{model_shortname}/{trait}_{persona_instruction_type}_instruct.csv"
@@ -97,7 +97,7 @@ def main(model, trait, judge_model="openai/gpt-oss-120b"):
     coefs = [1.0, 1.5, 2.0, 2.5, 3.0]
     layers = [
         int(model_config.num_hidden_layers * layer_frac)
-        for layer_frac in [0.4, 0.45, 0.5, 0.55, 0.6]
+        for layer_frac in [0.35, 0.4, 0.45, 0.5, 0.55, 0.6]
     ]
 
     best_success_rate = 0.0

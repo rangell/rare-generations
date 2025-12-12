@@ -291,7 +291,7 @@ def load_persona_questions(
     temperature=1,
     persona_instructions_type=None,
     assistant_name=None,
-    judge_model="gpt-4.1-mini-2025-04-14",
+    judge_model="openai/gpt-oss-120b",
     eval_type="0_100",
     version="eval",
 ):
@@ -502,7 +502,7 @@ def main(
     max_concurrent_judges=100,
     persona_instruction_type=None,
     assistant_name=None,
-    judge_model="gpt-4.1-mini-2025-04-14",
+    judge_model="openai/gpt-oss-120b",
     version="extract",
     overwrite=False,
     judge_launch_script="launch_judge_local.sh",
