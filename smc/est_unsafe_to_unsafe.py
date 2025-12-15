@@ -31,18 +31,24 @@ class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
         refusal_direction = load_refusal_direction(args.refusal_direction_path)
 
         # Construct torch hooks for ablating refusal
-        self.ablation_fwd_pre_hooks, self.ablation_fwd_hooks = (
-            get_all_direction_ablation_hooks(
+        self.ablation_fwd_pre_hooks = {}
+        self.ablation_fwd_hooks = {}
+        for ablation_intensity in self.args.ablation_intensities:
+            (
+                self.ablation_fwd_pre_hooks[str(ablation_intensity)],
+                self.ablation_fwd_hooks[str(ablation_intensity)],
+            ) = get_all_direction_ablation_hooks(
                 model,
                 refusal_direction["direction"],
-                ablation_intensity=args.ablation_intensity,
+                ablation_intensity=ablation_intensity,
             )
-        )
 
-    def proposal_context_manager(self, timestep: int) -> ContextManager:
+    def proposal_context_manager(self, ablation_intensity: float) -> ContextManager:
         return add_hooks(
-            module_forward_pre_hooks=self.ablation_fwd_pre_hooks,
-            module_forward_hooks=self.ablation_fwd_hooks,
+            module_forward_pre_hooks=self.ablation_fwd_pre_hooks[
+                str(ablation_intensity)
+            ],
+            module_forward_hooks=self.ablation_fwd_hooks[str(ablation_intensity)],
         )
 
     def judge_responses(self, prompt: str, responses: List[str]) -> torch.Tensor:
@@ -63,6 +69,38 @@ class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
             return scores
 
         return reward_fn
+
+
+def run_cem(estimator, example, outputs):
+    steering_coef_arr = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    proposal_idx_switch_arr = [0, 10, 20, 50, 100, 151]
+    proposal_bias_arr = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+    cross_entropy_tensor = estimator.estimate_CEM_harmful_trait(
+        prompt=example["forbidden_prompt"],
+        completions=outputs["responses"],
+        completion_ids=outputs["_completion_ids"],
+        full_input_ids=outputs["_input_ids"],
+        judge_scores=outputs["judge_scores"],
+        importance_weights=outputs["importance_weights"],
+        steering_coef_arr=steering_coef_arr,
+        proposal_idx_switch_arr=proposal_idx_switch_arr,
+        proposal_bias_arr=proposal_bias_arr,
+    )
+
+    argmin_indices = torch.unravel_index(
+        torch.argmin(cross_entropy_tensor), cross_entropy_tensor.shape
+    )
+    print(
+        f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}"
+    )
+    print("Re-running with these params")
+    _, outputs = estimator.estimate_harmful_trait(
+        prompt=example["forbidden_prompt"],
+        steering_coef=steering_coef_arr[argmin_indices[0]],
+        proposal_idx_switch=proposal_idx_switch_arr[argmin_indices[1]],
+        proposal_bias=proposal_bias_arr[argmin_indices[2]],
+    )
 
 
 def main(args):
@@ -115,12 +153,14 @@ def main(args):
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(args.model_name)
 
-    # Load judged monte carlo samples
+    # Load judged Monte Carlo samples
     mc_dataset = load_dataset(
         "json",
         data_files=args.mc_est_dataset,
-        streaming=True,
+        # streaming=True,
     )["train"]
+
+    mc_dataset = mc_dataset.select(range(20))
 
     smc_args = dict(
         device=model.device,
@@ -160,8 +200,13 @@ def main(args):
         model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
 
         _, outputs = estimator.estimate_harmful_trait(
-            prompt=example["forbidden_prompt"]
+            prompt=example["forbidden_prompt"],
+            steering_coef=args.ablation_intensity,
+            proposal_idx_switch=args.proposal_idx_switch,
+            proposal_bias=args.proposal_bias,
         )
+
+        cem_output_dict = run_cem(estimator, example, outputs)
 
         print("\n-----------------------------------------------\n")
 
@@ -277,6 +322,14 @@ def add_arguments(parser):
         type=float,
         default=1.0,
         help="Fraction of the refusal direction to ablate in proposal (in [0, 1]).",
+    )
+
+    parser.add_argument(
+        "--ablation_intensities",
+        type=float,
+        nargs="+",  # Expects one or more space-separated floats
+        default=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+        help="Available set of ablation intensities.",
     )
 
     ###############################################################

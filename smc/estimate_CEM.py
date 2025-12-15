@@ -1,35 +1,19 @@
-from typing import List, ContextManager, Callable
 import argparse
 import json
 from pathlib import Path
-import os
-import datetime
 import random
-import time
-from joblib import Parallel, delayed
 from tqdm.auto import tqdm
 import pickle
 
 from datasets import load_dataset
 import numpy as np
 import torch
-from torch import Tensor
-
-from refusal_direction.pipeline.utils.hook_utils import (
-    add_hooks,
-    get_direction_ablation_input_pre_hook,
-    get_direction_ablation_output_hook,
-)
-from strong_reject.evaluate import strongreject_rubric
 
 from smc.model_utils import load_model_and_tokenizer
-from smc.rewards import _sr_harmful_reward_fn
 from smc.est_unsafe_to_unsafe import UnsafeToUnsafeEstimator
 
 from smc.model_utils import (
     load_model_and_tokenizer,
-    load_refusal_direction,
-    get_all_direction_ablation_hooks,
 )
 
 
@@ -109,8 +93,8 @@ def main(args):
     cross_entropy_matrix = 0
     proposal_idx_switch_arr = [0, 10, 20, 50, 100, -1]
     proposal_bias_arr = [0, 0.25, 0.5, 0.75, 1]
-
     # for prompt_idx in tqdm(range(len(cem_model_output_dict))):
+
     for prompt_idx in tqdm(range(100)):
         example = cem_model_output_dict[prompt_idx]
 
