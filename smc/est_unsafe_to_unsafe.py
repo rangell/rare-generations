@@ -187,7 +187,7 @@ def main(args):
         data_files=args.mc_est_dataset,
     )["train"]
 
-    mc_dataset = mc_dataset.select(range(5))
+    mc_dataset = mc_dataset.select(range(20))
 
     smc_args = dict(
         device=model.device,

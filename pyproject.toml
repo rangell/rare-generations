@@ -13,6 +13,7 @@ dependencies = [
     "joblib>=1.5.2",
     "litellm>=1.80.9",
     "matplotlib>=3.10.7",
+    "numba>=0.61.2",
     "pandas>=2.3.3",
     "peft>=0.18.0",
     "together>=1.5.31",
