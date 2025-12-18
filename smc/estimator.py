@@ -51,8 +51,8 @@ class HarmfulTraitEstimator(ABC):
         self,
         prompt: str,
         steering_coef: float,
-        proposal_idx_switch: int,
-        proposal_bias: float,
+        proposal_idx_switch: Optional[int] = None,
+        proposal_bias: Optional[float] = None,
     ):
         # Initialize the conversation
         messages = [
@@ -202,8 +202,8 @@ class HarmfulTraitEstimator(ABC):
         input_ids,
         attention_mask,
         steering_coef: float,
-        proposal_idx_switch: int,
-        proposal_bias: float,
+        proposal_idx_switch: Optional[int] = None,
+        proposal_bias: Optional[float] = None,
         prompt: str = "",
     ):
         """Implements rare event estimation using sequential Monte Carlo."""
@@ -232,6 +232,24 @@ class HarmfulTraitEstimator(ABC):
 
         log_importance_weights = torch.zeros(num_particles, 1, device=_input_ids.device)
         log_importance_weight_arr = []
+
+        if proposal_bias is None:
+            proposal_bias = torch.rand(
+                (num_particles, 1), dtype=torch.bfloat16, device="cuda"
+            )
+        else:
+            proposal_bias = torch.full(
+                (num_particles, 1), proposal_bias, dtype=torch.bfloat16, device="cuda"
+            )
+
+        if proposal_idx_switch is None:
+            proposal_idx_switch = torch.randint(
+                0, self.args.max_new_tokens + 1, (num_particles, 1), device="cuda"
+            )
+        else:
+            proposal_idx_switch = torch.full(
+                (num_particles, 1), proposal_idx_switch, device="cuda"
+            )
 
         if self.smc_args is not None:
             # smc_args["r_fn"] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
@@ -276,37 +294,42 @@ class HarmfulTraitEstimator(ABC):
                 )
             base_logprobs = torch.log_softmax(base_logits[:, self.vocab_mask], dim=-1)
 
-            if generation_idx < proposal_idx_switch:
-                # Compute the proposal distribution
-                with (
-                    torch.no_grad(),
-                    self.proposal_context_manager(steering_coef),
-                ):
-                    refusal_ablated_logits, proposal_past_key_values = (
-                        self._model_forward_wrapper(
-                            **_inputs,
-                            past_key_values=proposal_past_key_values,
-                            cache_position=cache_position,
-                            use_cache=True,
-                            eos_token_id=self.tokenizer.eos_token_id,
-                            pad_token_id=self.tokenizer.pad_token_id,
-                            output_scores=True,
-                            return_dict_in_generate=True,
-                            output_hidden_states=False,
-                        )
+            # Compute the proposal distribution
+            with (
+                torch.no_grad(),
+                self.proposal_context_manager(steering_coef),
+            ):
+                refusal_ablated_logits, proposal_past_key_values = (
+                    self._model_forward_wrapper(
+                        **_inputs,
+                        past_key_values=proposal_past_key_values,
+                        cache_position=cache_position,
+                        use_cache=True,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        output_scores=True,
+                        return_dict_in_generate=True,
+                        output_hidden_states=False,
                     )
-                proposal_logprobs = torch.log_softmax(
-                    refusal_ablated_logits[:, self.vocab_mask], dim=-1
                 )
+            proposal_logprobs = torch.log_softmax(
+                refusal_ablated_logits[:, self.vocab_mask], dim=-1
+            )
 
-                # Linearly interpolate between distributions
-                proposal_logprobs = torch.log(
-                    proposal_bias * torch.exp(proposal_logprobs)
-                    + (1 - proposal_bias) * torch.exp(base_logprobs)
-                )
+            # Linearly interpolate between distributions
+            proposal_logprobs = torch.log(
+                proposal_bias * torch.exp(proposal_logprobs)
+                + (1 - proposal_bias) * torch.exp(base_logprobs)
+            )
 
-            else:
-                proposal_logprobs = base_logprobs
+            # Enforce proposal_idx_switch here
+            keep_proposal_mask = (generation_idx < proposal_idx_switch).type(
+                torch.bfloat16
+            )
+            proposal_logprobs = (
+                keep_proposal_mask * proposal_logprobs
+                + (1 - keep_proposal_mask) * base_logprobs
+            )
 
             next_tokens = torch.multinomial(
                 proposal_logprobs.exp(),
@@ -575,7 +598,7 @@ class HarmfulTraitEstimator(ABC):
             input_ids=full_input_ids,
             attention_mask=full_attention_mask,
             output_hidden_states=False,
-            use_cache=False,
+            enable_cache=False,
         )
 
         print("Running CEM!")
@@ -626,7 +649,7 @@ class HarmfulTraitEstimator(ABC):
         )
 
         print("Computing cross entropy tensor...")
-        for particle_idx in range(num_particles):
+        for particle_idx in trange(num_particles):
             for i in range(len(steering_coef_arr)):
                 # get eot token index
 
