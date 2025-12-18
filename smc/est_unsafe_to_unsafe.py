@@ -89,8 +89,8 @@ def run_cem(
     for i, keep in enumerate(keep_mask):
         if keep:
             completions.append(outputs["responses"][i])
-            completion_ids.append(outputs["_completion_ids"][i])
             full_input_ids.append(outputs["_input_ids"][i])
+            completion_ids.append(outputs["_completion_ids"][i])
 
     cross_entropy_tensor = estimator.estimate_CEM_harmful_trait(
         prompt=example["forbidden_prompt"],
@@ -109,6 +109,12 @@ def run_cem(
     )
     print(
         f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}"
+    )
+    _, _out = estimator.estimate_harmful_trait(
+        prompt=example["forbidden_prompt"],
+        steering_coef=steering_coef_arr[argmin_indices[0]],
+        proposal_idx_switch=proposal_idx_switch_arr[argmin_indices[1]],
+        proposal_bias=proposal_bias_arr[argmin_indices[2]],
     )
 
     return cross_entropy_tensor / cross_entropy_tensor.sum()

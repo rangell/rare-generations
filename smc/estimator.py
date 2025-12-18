@@ -661,6 +661,9 @@ class HarmfulTraitEstimator(ABC):
                 -1,
                 batch_input_ids[:, 1:].unsqueeze(-1),
             ).squeeze(-1)
+            del _batch_outputs
+            gc.collect()
+            torch.cuda.empty_cache()
 
             batched_logprobs.append(_batch_logprobs)
         return torch.cat(batched_logprobs, dim=0)
