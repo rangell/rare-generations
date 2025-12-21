@@ -137,6 +137,79 @@ def merge_dicts(sink_dict, source_dict):
     return new_sink_dict
 
 
+def set_proposal_hparams(
+    args,
+    output_dir,
+    mc_dataset,
+    estimator,
+    steering_coef_arr,
+    proposal_idx_switch_arr,
+    proposal_bias_arr,
+):
+    """Sets the best proposal hyperparameters in args using CEM."""
+    cross_entropy_tensor = 0
+
+    model_output_dict = {}
+    for prompt_idx, example in enumerate(mc_dataset):
+        model_output_dict[prompt_idx] = {}
+        model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
+
+        print(
+            f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}"
+        )
+        print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
+
+        model_output_dict[prompt_idx]["mc_scores"] = example["score"]
+        model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
+
+        outputs = {}
+
+        for sub_idx, ablation_intensity in enumerate([0.2, 0.4, 0.6, 0.8, 1.0]):
+            print(f"Ablation intensity: {ablation_intensity}")
+            print(
+                f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}"
+            )
+            print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
+
+            _, _out = estimator.estimate_harmful_trait(
+                prompt=example["forbidden_prompt"],
+                steering_coef=ablation_intensity,
+            )
+
+            print("\n-----------------------------------------------\n")
+
+            outputs = merge_dicts(outputs, _out)
+
+        cross_entropy_tensor += run_cem(
+            estimator,
+            example,
+            outputs,
+            steering_coef_arr,
+            proposal_idx_switch_arr,
+            proposal_bias_arr,
+        )
+
+        for key in outputs:
+            model_output_dict[prompt_idx][key] = outputs[key]
+
+        if prompt_idx % 5 == 0:
+            with open(os.path.join(output_dir, "cem_model_outputs.pkl"), "wb") as f:
+                pickle.dump(model_output_dict, f)
+
+    with open(os.path.join(output_dir, "cem_model_outputs.pkl"), "wb") as f:
+        pickle.dump(model_output_dict, f)
+
+    argmin_indices = torch.unravel_index(
+        torch.argmin(cross_entropy_tensor), cross_entropy_tensor.shape
+    )
+    args.ablation_intensity = steering_coef_arr[argmin_indices[0]]
+    args.proposal_idx_switch = proposal_idx_switch_arr[argmin_indices[1]]
+    args.proposal_bias = proposal_bias_arr[argmin_indices[2]]
+    print(
+        f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}"
+    )
+
+
 def main(args):
     args.model_shortname = args.model_name.split("/")[1]
     args.refusal_direction_path = (
@@ -187,14 +260,6 @@ def main(args):
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(args.model_name)
 
-    # Load judged Monte Carlo samples
-    mc_dataset = load_dataset(
-        "json",
-        data_files=args.mc_est_dataset,
-    )["train"]
-
-    mc_dataset = mc_dataset.select(range(20))
-
     smc_args = dict(
         device=model.device,
         r_fn=None,
@@ -220,48 +285,54 @@ def main(args):
         smc_args=smc_args,
     )
 
+    if args.use_cem:
+        # This will set the args for proposal model hyperparameters
+        mc_dataset = load_dataset(
+            "json",
+            data_files=args.mc_est_dataset,
+        )["train"]
+        mc_dataset = mc_dataset.select(range(int(args.cem_frac * len(mc_dataset))))
+
+        steering_coef_arr = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        proposal_idx_switch_arr = list(range(0, 151, 5))
+        proposal_bias_arr = np.linspace(0, 1, 25)
+        set_proposal_hparams(
+            args,
+            output_dir,
+            mc_dataset,
+            estimator,
+            steering_coef_arr,
+            proposal_idx_switch_arr,
+            proposal_bias_arr,
+        )
+
+    # Load judged Monte Carlo samples
+    mc_dataset = load_dataset(
+        "json",
+        data_files=args.mc_est_dataset,
+    )["train"]
+
     model_output_dict = {}
-
-    cross_entropy_tensor = 0
-
-    steering_coef_arr = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    proposal_idx_switch_arr = list(range(0, 151, 5))
-    proposal_bias_arr = np.linspace(0, 1, 25)
-
     for prompt_idx, example in enumerate(mc_dataset):
         model_output_dict[prompt_idx] = {}
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
-        print(f"Forbidden prompt ({prompt_idx}/...): {example['forbidden_prompt']}")
+        print(
+            f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}: {example['forbidden_prompt']}"
+        )
         print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
 
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
         model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
 
-        outputs = {}
-
-        for sub_idx, ablation_intensity in enumerate([0.2, 0.4, 0.6, 0.8, 1.0]):
-            print(f"Ablation intensity: {ablation_intensity}")
-            print(f"Forbidden prompt ({prompt_idx}/...): {example['forbidden_prompt']}")
-            print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
-
-            _, _out = estimator.estimate_harmful_trait(
-                prompt=example["forbidden_prompt"],
-                steering_coef=ablation_intensity,
-            )
-
-            print("\n-----------------------------------------------\n")
-
-            outputs = merge_dicts(outputs, _out)
-
-        cross_entropy_tensor += run_cem(
-            estimator,
-            example,
-            outputs,
-            steering_coef_arr,
-            proposal_idx_switch_arr,
-            proposal_bias_arr,
+        _, outputs = estimator.estimate_harmful_trait(
+            prompt=example["forbidden_prompt"],
+            steering_coef=args.ablation_intensity,
+            proposal_idx_switch=args.proposal_idx_switch,
+            proposal_bias=args.proposal_bias,
         )
+
+        print("\n-----------------------------------------------\n")
 
         for key in outputs:
             model_output_dict[prompt_idx][key] = outputs[key]
@@ -269,13 +340,6 @@ def main(args):
         if prompt_idx % 5 == 0:
             with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
                 pickle.dump(model_output_dict, f)
-
-    argmin_indices = torch.unravel_index(
-        torch.argmin(cross_entropy_tensor), cross_entropy_tensor.shape
-    )
-    print(
-        f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}"
-    )
 
     with open(os.path.join(output_dir, "model_outputs.pkl"), "wb") as f:
         pickle.dump(model_output_dict, f)
@@ -373,6 +437,12 @@ def add_arguments(parser):
     )
     parser.add_argument(
         "--smc_verbose", action="store_true", help="Whether to print SMC logs"
+    )
+    parser.add_argument(
+        "--use_cem", action="store_true", help="Use CEM to select proposal model."
+    )
+    parser.add_argument(
+        "--cem_frac", type=float, default=0.1, help="Fraction of data to use for CEM."
     )
 
     ################### SPECIFIC ARGS #############################

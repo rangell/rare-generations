@@ -19,15 +19,6 @@ class StandardModel(ModelBase):
 
 
 def construct_model_base(model_name_or_path: str) -> ModelBase:
-    # from pipeline.model_utils.model_base import load_model_and_tokenizer
-
-    # model, tokenizer = load_model_and_tokenizer(model_name_or_path)
-
-    # from IPython import embed
-
-    # embed()
-    # exit()
-
     assert any(
         [
             family in model_name_or_path.lower()
@@ -39,6 +30,7 @@ def construct_model_base(model_name_or_path: str) -> ModelBase:
                 "phi-4",
                 "mistral",
                 "gpt-oss",
+                "olmo-3",
             ]
         ]
     )

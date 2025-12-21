@@ -109,7 +109,6 @@ def batch_iterator_pile(tokenizer, batch_size, max_length):
         "monology/pile-uncopyrighted",
         split="train",
         streaming=True,
-        trust_remote_code=True,
     )
 
     it_dataset = iter(dataset)

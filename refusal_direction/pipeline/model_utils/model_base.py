@@ -24,11 +24,9 @@ def load_model_and_tokenizer(model_name_or_path):
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         torch_dtype="auto",
-        # low_cpu_mem_usage=True,
         device_map="auto",
         token=os.getenv("HF_TOKEN"),
         config=config,
-        trust_remote_code=True,
     ).eval()
 
     model.requires_grad_(False)
