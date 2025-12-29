@@ -1,7 +1,5 @@
 from abc import ABC, abstractmethod
 
-import numba
-import numpy as np
 import copy
 import gc
 import math
@@ -11,66 +9,6 @@ from tqdm import tqdm, trange
 import torch
 from transformers import DynamicCache
 from smc.fk_steering import FKSteering, update_cache_after_resampling
-
-
-@numba.njit(parallel=True, fastmath=True)
-def _compute_cem_tensor(
-    prompt_len,
-    eos_token_mask,
-    base_logprobs,
-    proposal_logprobs_arr,
-    judge_scores,
-    importance_weights,
-    steering_coef_arr,
-    proposal_idx_switch_arr,
-    proposal_bias_arr,
-):
-    cross_entropy_tensor = np.zeros(
-        (
-            len(steering_coef_arr),
-            len(proposal_idx_switch_arr),
-            len(proposal_bias_arr),
-        )
-    )
-
-    print("Computing cross entropy tensor...")
-    for particle_idx in range(base_logprobs.shape[0]):
-        for i in range(len(steering_coef_arr)):
-            start_idx = prompt_len - 1
-
-            base_logprobs_target = base_logprobs[particle_idx, start_idx:]
-            proposal_logprobs_target = proposal_logprobs_arr[i][
-                particle_idx, start_idx:
-            ]
-
-            base_logprobs_target[eos_token_mask[particle_idx]] = 0.0
-            proposal_logprobs_target[eos_token_mask[particle_idx]] = 0.0
-
-            # shifting window to switch from proposal to base, vectorized for various proposal_idx_switch
-            for j, proposal_idx_switch in enumerate(proposal_idx_switch_arr):
-                for k, mixing in enumerate(proposal_bias_arr):
-                    mixed_logprobs = np.zeros_like(proposal_logprobs_target)
-
-                    mixed_logprobs[:proposal_idx_switch] = mixing * np.exp(
-                        proposal_logprobs_target[:proposal_idx_switch]
-                    ) + (1 - mixing) * np.exp(
-                        base_logprobs_target[:proposal_idx_switch]
-                    )
-                    mixed_logprobs[:proposal_idx_switch] = np.log(
-                        mixed_logprobs[:proposal_idx_switch]
-                    )
-
-                    mixed_logprobs[proposal_idx_switch:] = base_logprobs_target[
-                        proposal_idx_switch:
-                    ]
-
-                    cross_entropy_tensor[i, j, k] += (
-                        judge_scores[particle_idx]
-                        * importance_weights[particle_idx].item()
-                        * -np.sum(mixed_logprobs).item()
-                    )
-    print("Done.")
-    return cross_entropy_tensor
 
 
 class HarmfulTraitEstimator(ABC):
@@ -136,9 +74,9 @@ class HarmfulTraitEstimator(ABC):
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
 
-        # Clear cache to avoid OOM errors
-        gc.collect()
-        torch.cuda.empty_cache()
+        ### Clear cache to avoid OOM errors
+        # gc.collect()
+        # torch.cuda.empty_cache()
 
         # reward function for SMC
         # Just past to SMC as r_fn=reward_fn
@@ -433,8 +371,8 @@ class HarmfulTraitEstimator(ABC):
                 len(log_importance_weight_arr),
                 generation_idx + 1,
             )
-            # Update input arguments
 
+            # Update input arguments
             _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
             _attention_mask = torch.cat(
                 (_attention_mask, torch.ones_like(next_tokens)), dim=1
@@ -444,7 +382,7 @@ class HarmfulTraitEstimator(ABC):
                 cache_position[-1:] + 1
             )  # add one more position for the next token
 
-            if self.smc_args is not None:
+            if self.smc_args is not None and self.smc_args["use_smc"]:
                 p_q_t = torch.exp(
                     base_next_token_logprobs - proposal_next_token_logprobs
                 ).view(-1)
@@ -519,15 +457,12 @@ class HarmfulTraitEstimator(ABC):
                         model_config=self.model.config,
                     )
 
-            if _completed_generation.all():
-                break
-
             ### END OF GENERATION LOOP
 
-        del base_past_key_values
-        del proposal_past_key_values
-        gc.collect()
-        torch.cuda.empty_cache()
+        # del base_past_key_values
+        # del proposal_past_key_values
+        # gc.collect()
+        # torch.cuda.empty_cache()
 
         importance_weights = log_importance_weights.to(torch.float64).exp()
 
@@ -587,9 +522,6 @@ class HarmfulTraitEstimator(ABC):
             for key in smc_quantities:
                 ret[key] = smc_quantities[key]
 
-        gc.collect()
-        torch.cuda.empty_cache()
-
         return ret
 
     def estimate_CEM_harmful_trait(
@@ -608,10 +540,6 @@ class HarmfulTraitEstimator(ABC):
         completion_ids = torch.tensor(completion_ids).to(self.model.device)
 
         prompt_len = full_input_ids.shape[1] - completion_ids.shape[1]
-
-        # Clear cache to avoid OOM errors
-        gc.collect()
-        torch.cuda.empty_cache()
 
         # compute CEM score
         outputs = self.estimate_cross_entropy_loss(
@@ -661,9 +589,9 @@ class HarmfulTraitEstimator(ABC):
                 -1,
                 batch_input_ids[:, 1:].unsqueeze(-1),
             ).squeeze(-1)
-            del _batch_outputs
-            gc.collect()
-            torch.cuda.empty_cache()
+            # del _batch_outputs
+            # gc.collect()
+            # torch.cuda.empty_cache()
 
             batched_logprobs.append(_batch_logprobs)
         return torch.cat(batched_logprobs, dim=0)
@@ -705,44 +633,66 @@ class HarmfulTraitEstimator(ABC):
 
         print("Computing base logprobs...")
         with torch.no_grad():
-            base_logprobs = (
-                self._model_forward_wrapper(**model_input)
-                .to("cpu")
-                .to(torch.float)
-                .numpy()
-            )
+            base_logprobs = self._model_forward_wrapper(**model_input)
         print("Done.")
 
         print("Computing proposal_logprobs with various steering coefficients...")
         proposal_logprobs_arr = []
         for steering_coef in tqdm(steering_coef_arr):
             with torch.no_grad(), self.proposal_context_manager(steering_coef):
-                _proposal_logprobs = (
-                    self._model_forward_wrapper(**model_input)
-                    .to("cpu")
-                    .to(torch.float)
-                    .numpy()
-                )
+                _proposal_logprobs = self._model_forward_wrapper(**model_input)
                 proposal_logprobs_arr.append(_proposal_logprobs)
         print("Done.")
 
-        eos_token_mask = (
-            (full_input_ids[:, prompt_len:] == self.tokenizer.eos_token_id)
-            .to("cpu")
-            .numpy()
+        print("Computing cross entropy tensor...")
+        start_idx = prompt_len - 1
+        base_logprobs = base_logprobs[None, :, start_idx:]
+        proposal_logprobs = torch.stack(proposal_logprobs_arr)[:, :, start_idx:]
+
+        proposal_biases = torch.from_numpy(proposal_bias_arr).to("cuda")
+        proposal_idx_switches = torch.tensor(proposal_idx_switch_arr).to("cuda")
+
+        mixing_logprobs = torch.log(
+            torch.einsum("i,jkl->ijkl", proposal_biases, proposal_logprobs.exp())
+            + torch.einsum("i,jkl->ijkl", 1 - proposal_biases, base_logprobs.exp())
+        )[None, :, :, :, :].repeat(proposal_idx_switches.shape[0], 1, 1, 1, 1)
+
+        base_logprobs = (
+            base_logprobs[None, None, :, :, :]
+            .expand(*mixing_logprobs.shape)
+            .to(torch.float64)
         )
 
-        cross_entropy_tensor = _compute_cem_tensor(
-            prompt_len=prompt_len,
-            eos_token_mask=eos_token_mask,
-            base_logprobs=base_logprobs,
-            proposal_logprobs_arr=proposal_logprobs_arr,
-            judge_scores=judge_scores,
-            importance_weights=importance_weights,
-            steering_coef_arr=steering_coef_arr,
-            proposal_idx_switch_arr=proposal_idx_switch_arr,
-            proposal_bias_arr=proposal_bias_arr,
-        )
-        cross_entropy_tensor = torch.from_numpy(cross_entropy_tensor)
+        proposal_switch_mask = (
+            torch.arange(mixing_logprobs.shape[-1], device="cuda")[None, :]
+            >= proposal_idx_switches[:, None]
+        )[:, None, None, None, :].expand(*mixing_logprobs.shape)
 
-        return cross_entropy_tensor / num_particles
+        eos_token_mask = full_input_ids[:, prompt_len:] == self.tokenizer.eos_token_id
+        eos_token_mask = eos_token_mask.expand(*mixing_logprobs.shape)
+
+        mixing_logprobs[proposal_switch_mask] = base_logprobs[proposal_switch_mask]
+        mixing_logprobs[eos_token_mask] = 0.0
+        mixing_logprobs = mixing_logprobs.sum(dim=-1)
+
+        judge_scores = (
+            torch.from_numpy(judge_scores)
+            .to("cuda")
+            .to(torch.float64)[None, None, None, :]
+            .expand(*mixing_logprobs.shape)
+        )
+        importance_weights = (
+            torch.from_numpy(importance_weights.squeeze())
+            .to("cuda")
+            .to(torch.float64)[None, None, None, :]
+            .expand(*mixing_logprobs.shape)
+        )
+
+        cross_entropy_tensor = (
+            (-mixing_logprobs * judge_scores * importance_weights)
+            .sum(dim=-1)
+            .permute(2, 0, 1)
+        )
+        print("Done.")
+
+        return cross_entropy_tensor

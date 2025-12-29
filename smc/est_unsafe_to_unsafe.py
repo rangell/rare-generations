@@ -110,6 +110,7 @@ def run_cem(
     print(
         f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}"
     )
+
     _, _out = estimator.estimate_harmful_trait(
         prompt=example["forbidden_prompt"],
         steering_coef=steering_coef_arr[argmin_indices[0]],
@@ -164,7 +165,7 @@ def set_proposal_hparams(
 
         outputs = {}
 
-        for sub_idx, ablation_intensity in enumerate([0.2, 0.4, 0.6, 0.8, 1.0]):
+        for sub_idx, ablation_intensity in enumerate(args.ablation_intensities):
             print(f"Ablation intensity: {ablation_intensity}")
             print(
                 f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}"
@@ -318,7 +319,7 @@ def main(args):
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
         print(
-            f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}: {example['forbidden_prompt']}"
+            f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}"
         )
         print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
 

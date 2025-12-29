@@ -17,6 +17,8 @@ hf download rangell/mc_estimates --repo-type dataset --local-dir monte_carlo_est
 uv run --module monte_carlo_estimates.src.strong_reject.generate_mc_est --target-model Qwen/Qwen3-4B-Instruct-2507 --num-return-sequences 10000 --output-dir monte_carlo_estimates/results/strong_reject/
 ```
 
+NOTE: for `google/gemma-2-9b-it` we need to add an extra flag for vLLM, namely prepend `VLLM_FLASH_ATTN_VERSION=2` to the above command (and below for persona vectors as well)
+
 ### Persona Vectors
 
 ```bash
@@ -50,7 +52,7 @@ The above pipeline also does a little search over steering coefficients and laye
 
 ### Estimating harm example
 ```bash
-uv run --module smc.est_unsafe_to_unsafe --model_name Qwen/Qwen3-4B-Instruct-2507 --num_particles 100 --fwd_batch_size=100 --proposal_idx_switch 20 --ablation_intensity 0.8 --max_new_tokens 150
+uv run --module smc.est_unsafe_to_unsafe --model_name meta-llama/Llama-3.1-8B-Instruct  --num_particles 100 --fwd_batch_size 100 --max_new_tokens 150 --use_cem
 ```
 
 ### Estimating persona example
