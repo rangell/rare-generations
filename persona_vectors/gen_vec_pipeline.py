@@ -2,6 +2,7 @@ import os
 import gc
 import json
 import torch
+import subprocess
 import logging
 import fire
 from itertools import product
@@ -76,6 +77,8 @@ def main(model, trait, judge_model="openai/gpt-oss-120b"):
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+    busy_gpu_subprocess = subprocess.Popen(["python", "misc/run_50xALL.py"])
+
     save_dir = f"persona_vectors/persona_vectors/{model_shortname}/"
     save_persona_vector(
         model,
@@ -86,6 +89,9 @@ def main(model, trait, judge_model="openai/gpt-oss-120b"):
         ablate_refusal=ablate_refusal,
         ablation_intensity=ablation_intensity,
     )
+
+    busy_gpu_subprocess.terminate()
+    busy_gpu_subprocess.wait()
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
 

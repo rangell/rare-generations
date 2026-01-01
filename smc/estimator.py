@@ -21,7 +21,7 @@ class HarmfulTraitEstimator(ABC):
 
         def token_exists(id):
             try:
-                self.tokenizer.decode(id)
+                self.tokenizer.decode([id])
                 return 1
             except TypeError:
                 return 0
@@ -75,7 +75,7 @@ class HarmfulTraitEstimator(ABC):
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
 
-        ### Clear cache to avoid OOM errors
+        ## Clear cache to avoid OOM errors
         gc.collect()
         torch.cuda.empty_cache()
 
