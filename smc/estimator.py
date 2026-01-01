@@ -293,7 +293,7 @@ class HarmfulTraitEstimator(ABC):
                     return_dict_in_generate=True,
                     output_hidden_states=False,
                 )
-            base_logprobs = torch.log_softmax(base_logits[:, self.vocab_mask], dim=-1)
+            base_logprobs = torch.log_softmax(base_logits, dim=-1)
 
             # Compute the proposal distribution
             with (
@@ -313,9 +313,7 @@ class HarmfulTraitEstimator(ABC):
                         output_hidden_states=False,
                     )
                 )
-            proposal_logprobs = torch.log_softmax(
-                refusal_ablated_logits[:, self.vocab_mask], dim=-1
-            )
+            proposal_logprobs = torch.log_softmax(refusal_ablated_logits, dim=-1)
 
             # Linearly interpolate between distributions
             proposal_logprobs = torch.log(
@@ -331,12 +329,12 @@ class HarmfulTraitEstimator(ABC):
                 keep_proposal_mask * proposal_logprobs
                 + (1 - keep_proposal_mask) * base_logprobs
             )
+            proposal_probs = proposal_logprobs.exp() * self.vocab_mask[None, :]
 
             next_tokens = torch.multinomial(
-                proposal_logprobs.exp(),
+                proposal_probs,
                 num_samples=1,
             )
-            next_tokens = torch.where(self.vocab_mask)[0][next_tokens]
 
             # Check if sequence is completed
             _completed_generation |= next_tokens == self.tokenizer.eos_token_id
