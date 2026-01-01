@@ -92,6 +92,11 @@ def run_cem(
             full_input_ids.append(outputs["_input_ids"][i])
             completion_ids.append(outputs["_completion_ids"][i])
 
+    if len(completions) == 0:
+        print("WARNING: All generations were filtered out...")
+        print("Returning 0.0 for CEM estimate")
+        return 0.0
+
     cross_entropy_tensor = estimator.estimate_CEM_harmful_trait(
         prompt=example["forbidden_prompt"],
         completions=completions,
