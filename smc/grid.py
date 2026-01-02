@@ -1,0 +1,85 @@
+import argparse
+import yaml
+from pathlib import Path
+import os
+import itertools
+from tqdm import tqdm
+
+# from est_unsafe_to_unsafe import main as launch_experiment
+
+
+def create_grid():
+    grid = {
+        "output_dir": "icml_unsafe",
+        "model_name": [
+            # "Qwen/Qwen2.5-32B-Instruct",
+            "meta-llama/Llama-3.1-8B-Instruct",
+            # "microsoft/phi-4",
+            "meta-llama/Llama-3.2-1B-Instruct",
+            "allenai/Olmo-3-7B-Instruct",
+            # "google/gemma-2-9b-it",
+            # "Qwen/Qwen2.5-7B-Instruct",
+        ],
+        # "num_particles": 200,  # [100, 500, 1000]
+        # "use_smc": [False],
+        # "proposal_idx_switch": [10, 20],
+        # "ablation_intensity": [0.5, 0.75],
+        # "proposal_bias": [1.0],
+    }
+
+    return grid
+
+
+def generate_args(index):
+    grid_dict = create_grid()
+
+    hp_grid = []
+
+    # Separate list parameters from scalar parameters
+    list_params = {k: v for k, v in grid_dict.items() if isinstance(v, list)}
+    scalar_params = {k: v for k, v in grid_dict.items() if not isinstance(v, list)}
+
+    param_names = list(list_params.keys())
+    param_values = list(list_params.values())
+
+    # Generate all combinations using itertools.product
+    all_combinations = list(itertools.product(*param_values))
+
+    for combo in tqdm(all_combinations):
+        # Create parameter dictionary for this combination
+        params = dict(zip(param_names, combo))
+        params.update(scalar_params)
+
+        if params not in hp_grid:
+            hp_grid.append(params)
+
+    # with open(config_path, "r") as f:
+    #     config = yaml.safe_load(f)
+
+    new_args = hp_grid[index]
+    # config = {}
+
+    # config = argparse.Namespace(**config)
+    print(f"len(hp_grid): {len(hp_grid)}")
+    print(f"Selecting {index+1} out of {len(hp_grid)} configurations")
+
+    # Update args with the new configuration
+    config = {}
+    for key, value in new_args.items():
+        # setattr(config, key, value)
+        config[key] = value
+
+    config = argparse.Namespace(**config)
+    print(config)
+
+    return config
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--index", type=int, required=True)
+    args = parser.parse_args()
+
+    config = generate_args(args.index)
+    exp_command = "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run --module smc.est_unsafe_to_unsafe --output_dir {} --model_name {}  --num_particles 500 --fwd_batch_size 500 --max_new_tokens 150 --use_cem"
+    os.system(exp_command.format(config.output_dir, config.model_name))
