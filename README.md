@@ -23,7 +23,7 @@ NOTE: for `google/gemma-2-9b-it` we need to add an extra flag for vLLM, namely p
 
 ```bash
 uv run --module persona_vectors.eval.eval_persona --model Qwen/Qwen3-4B-Instruct-2507 --trait sycophantic --output_path monte_carlo_estimates/results/persona_vectors/sycophantic/Qwen3-4B-Instruct-2507_mc_est_10k.csv --version eval --n_per_question 10000 --overwrite True
-uv run --module monte_carlo_estimates/src/persona_vectors/reformat_output.py --trait sycophantic --csv_infile monte_carlo_estimates/results/persona_vectors/sycophantic/Qwen3-4B-Instruct-2507_mc_est_10k.csv monte_carlo_estimates/results/persona_vectors/sycophantic/Qwen3-4B-Instruct-2507_mc_est_10k.json
+uv run monte_carlo_estimates/src/persona_vectors/reformat_output.py --trait sycophantic --csv_infile monte_carlo_estimates/results/persona_vectors/sycophantic/Qwen3-4B-Instruct-2507_mc_est_10k.csv monte_carlo_estimates/results/persona_vectors/sycophantic/Qwen3-4B-Instruct-2507_mc_est_10k.json
 ```
 
 ## Steering Vector Computation
@@ -53,8 +53,8 @@ The above pipeline also does a little search over steering coefficients and laye
 ### Estimating harm example
 ```bash
 uv run --module smc.est_unsafe_to_unsafe --model_name meta-llama/Llama-3.1-8B-Instruct  --num_particles 100 --fwd_batch_size 100 --max_new_tokens 150 --use_cem
-```
 
+```
 ### Estimating persona example
 ```bash
 uv run --module smc.est_persona --model_name Qwen/Qwen3-4B-Instruct-2507 --mc_est_dataset monte_carlo_estimates/results/persona_vectors/sycophantic/Qwen3-4B-Instruct-2507_mc_est_10k.json --num_particles 100 --fwd_batch_size=100 --proposal_idx_switch 20 --max_new_tokens 1000 --trait sycophantic --steering_type response --steering_coef 2.0 --steering_vector_path persona_vectors/persona_vectors/Qwen3-4B-Instruct-2507/sycophantic_response_avg_diff.pt --steering_layer 24
