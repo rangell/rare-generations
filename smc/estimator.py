@@ -640,7 +640,7 @@ class HarmfulTraitEstimator(ABC):
             .expand(*mixing_logprobs.shape)
         )
         importance_weights = (
-            importance_weights.squeeze()
+            importance_weights.squeeze(1)
             .to("cuda")
             .to(torch.float64)[None, None, None, :]
             .expand(*mixing_logprobs.shape)
@@ -719,6 +719,7 @@ class HarmfulTraitEstimator(ABC):
         )
 
         cross_entropy_tensor = 0.0
+        zero_judge_batches = 0
         for (
             batch_base_logprobs,
             batch_proposal_logprobs,
@@ -732,6 +733,23 @@ class HarmfulTraitEstimator(ABC):
             chunked_judge_scores,
             chunked_importance_weights,
         ):
+            
+            # print(batch_base_logprobs.shape,
+            #       batch_proposal_logprobs.shape,
+            #       batch_full_input_ids.shape,
+            #       batch_judge_scores.shape,
+            #       batch_importance_weights.shape)
+            # print(batch_judge_scores.mean(), batch_judge_scores.std())
+            # import pdb; pdb.set_trace()
+            
+            # torch.Size([1, 1, 150]) torch.Size([10, 1, 150]) torch.Size([1, 206]) torch.Size([1]) torch.Size([1, 1])
+            # tensor(0.2500) tensor(nan)
+            
+            if batch_judge_scores.mean().item() == 0.0:
+                print("Skipping batch with all zero judge scores.")
+                zero_judge_batches += 1
+                continue
+            
             cross_entropy_tensor += self._compute_cross_entropy_tensor(
                 batch_base_logprobs,
                 batch_proposal_logprobs,
@@ -745,4 +763,9 @@ class HarmfulTraitEstimator(ABC):
             )
 
         print("Done.")
+        
+        if zero_judge_batches == len(chunked_judge_scores):
+            print("All batches had zero judge scores. Returning zero tensor.")
+            return 0
+        
         return cross_entropy_tensor

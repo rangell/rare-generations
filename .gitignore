@@ -8,6 +8,9 @@
 __pycache__/
 *.py[cod]
 *$py.class
+icml_unsafe/
+icml_unsafe_analysis_copy
+cem_dataset/
 
 grid_search_unsafe_to_unsafe/
 data_for_reading

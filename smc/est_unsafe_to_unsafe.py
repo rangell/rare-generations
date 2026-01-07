@@ -108,22 +108,25 @@ def run_cem(
         proposal_idx_switch_arr=proposal_idx_switch_arr,
         proposal_bias_arr=proposal_bias_arr,
     )
+    if cross_entropy_tensor is not None:
+        argmin_indices = torch.unravel_index(
+            torch.argmin(cross_entropy_tensor), cross_entropy_tensor.shape
+        )
+        print(
+            f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}"
+        )
 
-    argmin_indices = torch.unravel_index(
-        torch.argmin(cross_entropy_tensor), cross_entropy_tensor.shape
-    )
-    print(
-        f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}"
-    )
+        _, _out = estimator.estimate_harmful_trait(
+            prompt=example["forbidden_prompt"],
+            steering_coef=steering_coef_arr[argmin_indices[0]],
+            proposal_idx_switch=proposal_idx_switch_arr[argmin_indices[1]],
+            proposal_bias=proposal_bias_arr[argmin_indices[2]],
+        )
 
-    _, _out = estimator.estimate_harmful_trait(
-        prompt=example["forbidden_prompt"],
-        steering_coef=steering_coef_arr[argmin_indices[0]],
-        proposal_idx_switch=proposal_idx_switch_arr[argmin_indices[1]],
-        proposal_bias=proposal_bias_arr[argmin_indices[2]],
-    )
-
-    return cross_entropy_tensor / cross_entropy_tensor.sum()
+        return cross_entropy_tensor / cross_entropy_tensor.sum()
+    else:
+        return 0
+        
 
 
 def merge_dicts(sink_dict, source_dict):
