@@ -92,6 +92,10 @@ def run_cem(
             full_input_ids.append(outputs["_input_ids"][i])
             completion_ids.append(outputs["_completion_ids"][i])
 
+    print(f"Length of completions: {len(completions)}")
+    print(f"Length of completion ids: {len(completion_ids)}")
+    print(f"Length of full input ids: {len(full_input_ids)}")
+
     if len(completions) == 0:
         print("WARNING: All generations were filtered out...")
         print("Returning 0.0 for CEM estimate")
