@@ -13,8 +13,8 @@ def create_grid():
         "output_dir": "greedy_icml_unsafe",
         "model_name": [            
             # "meta-llama/Llama-3.1-8B-Instruct",
-            "microsoft/phi-4",
-            # "meta-llama/Llama-3.2-1B-Instruct",
+            # "microsoft/phi-4",
+            "meta-llama/Llama-3.2-1B-Instruct",
             # "allenai/Olmo-3-7B-Instruct",            
             # "Qwen/Qwen2.5-7B-Instruct",
             # "google/gemma-2-9b-it",
