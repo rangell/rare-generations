@@ -10,21 +10,18 @@ from tqdm import tqdm
 
 def create_grid():
     grid = {
-        "output_dir": "icml_unsafe",
-        "model_name": [
-            # "Qwen/Qwen2.5-32B-Instruct",
+        "output_dir": "greedy_icml_unsafe",
+        "model_name": [            
             # "meta-llama/Llama-3.1-8B-Instruct",
-            # "microsoft/phi-4",
+            "microsoft/phi-4",
             # "meta-llama/Llama-3.2-1B-Instruct",
-            "allenai/Olmo-3-7B-Instruct",
-            # "google/gemma-2-9b-it",
+            # "allenai/Olmo-3-7B-Instruct",            
             # "Qwen/Qwen2.5-7B-Instruct",
+            # "google/gemma-2-9b-it",
+            # "Qwen/Qwen2.5-32B-Instruct",
         ],
-        # "num_particles": 200,  # [100, 500, 1000]
-        # "use_smc": [False],
-        # "proposal_idx_switch": [10, 20],
-        # "ablation_intensity": [0.5, 0.75],
-        # "proposal_bias": [1.0],
+        "num_particles": [500],
+        "seed": 44
     }
 
     return grid
@@ -81,5 +78,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = generate_args(args.index)
-    exp_command = "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run --module smc.est_unsafe_to_unsafe --output_dir {} --model_name {}  --num_particles 500 --fwd_batch_size 500 --max_new_tokens 150 --use_cem"
-    os.system(exp_command.format(config.output_dir, config.model_name))
+    exp_command = "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run --module smc.est_unsafe_to_unsafe --output_dir {} --model_name {}  --num_particles {} --seed {} --fwd_batch_size 500 --max_new_tokens 150 --use_cem"
+    
+    
+    # exp_command = "uv run --module monte_carlo_estimates.src.strong_reject.generate_mc_est --target-model {} --num-return-sequences 1 --output-dir {} --temperature=0.0"
+    os.system(exp_command.format(config.output_dir, config.model_name, config.num_particles, config.seed))

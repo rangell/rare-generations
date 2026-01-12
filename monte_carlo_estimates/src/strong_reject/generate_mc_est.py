@@ -1,3 +1,4 @@
+import os
 import argparse
 import json
 import gc
@@ -104,6 +105,8 @@ if __name__ == "__main__":
     output_fname = (
         f"{args.output_dir}/{args.target_model.split('/')[1]}_mc_est_10k.json"
     )
+    
+    os.makedirs(args.output_dir, exist_ok=True)
     with open(output_fname, "w") as f:
         for zip_tuple in tqdm(zip(jailbreaks_dataset, *outputs)):
             in_data = zip_tuple[0]

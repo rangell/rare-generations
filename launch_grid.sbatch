@@ -6,7 +6,7 @@
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 #SBATCH --cpus-per-task=4
-#SBATCH --array=0
+#SBATCH --array=0-4
 #SBATCH --gres=gpu:4
 
 # Initialize Conda for bash

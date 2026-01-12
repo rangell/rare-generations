@@ -11,6 +11,8 @@ __pycache__/
 icml_unsafe/
 icml_unsafe_analysis_copy
 cem_dataset/
+greedy_icml_unsafe*
+greedy_icml_unsafe_copy*
 
 grid_search_unsafe_to_unsafe/
 data_for_reading
