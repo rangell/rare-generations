@@ -4,55 +4,53 @@ from pathlib import Path
 from tqdm import tqdm
 
 
-path = Path("combined_paraphrased_results.jsonl")
+path = Path("combined_paraphrased_results_new.jsonl")
 
 with open(path, "r") as f:
     data = [json.loads(line) for line in f]
-
-
+    
 from datasets import load_dataset
 
 # model_shortname = "Qwen2.5-7B-Instruct"
 # model_shortname = "Llama-3.1-8B-Instruct"
-model_shortname = 'phi-4'
-
-old_mc = load_dataset(
-    "json",
-    data_files=f"/gpfs/data/ranganathlab/singhr36/rare-generations/monte_carlo_estimates/results/strong_reject/{model_shortname}_mc_est_10k.json",
-)["train"]
-
-
-# old_mc = load_dataset(
-#     "json",
-#     data_files="greedy_icml_unsafe/Llama-3.1-8B-Instruct_mc_est_10k.json",
-# )["train"]
-
-assert len(old_mc) == len(data) // 25 + 1, "The length of the old MC estimates should be equal to the number of unique indices in the new data divided by 25 (since each index has 25 paraphrased examples)."
+# model_shortname = 'phi-4'
+for model_shortname in ["Llama-3.1-8B-Instruct", "phi-4", "Qwen2.5-7B-Instruct"]:
+    old_mc = load_dataset(
+        "json",
+        data_files=f"/gpfs/data/ranganathlab/singhr36/rare-generations/monte_carlo_estimates/results/strong_reject/{model_shortname}_mc_est_10k.json",
+    )["train"]
 
 
-# indices_to_keep = np.random.choice(len(old_mc), size=100, replace=False)
-# indices_to_keep = np.arange(100)
-indices_to_keep = np.arange(200, 313)
+    # old_mc = load_dataset(
+    #     "json",
+    #     data_files="greedy_icml_unsafe/Llama-3.1-8B-Instruct_mc_est_10k.json",
+    # )["train"]
+    # print(len(old_mc), len(data), len(data) // 25 + 1)
+    # assert len(old_mc) == len(data) // 25 + 1, "The length of the old MC estimates should be equal to the number of unique indices in the new data divided by 25 (since each index has 25 paraphrased examples)."
 
-fake_mc_file = []
-for d in tqdm(data):
-    original_index = d['index']
-    if original_index not in indices_to_keep:
-        continue
-    
-    old_mc_values = old_mc[original_index]
-    
-    assert d['original_forbidden_prompt'] == old_mc_values['forbidden_prompt']
-    
-    old_mc_values.pop("forbidden_prompt")
-    old_mc_values.pop("response")
+
+    # indices_to_keep = np.random.choice(len(old_mc), size=100, replace=False)
+    # indices_to_keep = np.arange(100)
+    indices_to_keep = np.arange(313)
+
+    fake_mc_file = []
+    for d in tqdm(data):
+        original_index = d['index']
+        if original_index not in indices_to_keep:
+            continue
         
-    combined_dict = {**d, **old_mc_values}
-    
-    fake_mc_file.append(combined_dict)
+        old_mc_values = old_mc[original_index]
+        
+        assert d['original_forbidden_prompt'] == old_mc_values['forbidden_prompt']
+        
+        old_mc_values.pop("forbidden_prompt")
+        old_mc_values.pop("response")
+            
+        combined_dict = {**d, **old_mc_values}        
+        fake_mc_file.append(combined_dict)
 
-with open(f'3_combined_paraphrased_results_with_mc_{model_shortname}.json', 'w') as f:
-    json.dump(fake_mc_file, f, indent=4)
+    with open(f'combined_paraphrased_results_with_mc_{model_shortname}.json', 'w') as f:
+        json.dump(fake_mc_file, f, indent=4)
 
 from IPython import embed
 

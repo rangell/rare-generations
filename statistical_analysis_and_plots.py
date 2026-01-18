@@ -133,7 +133,7 @@ def get_data(data_path, save_cheap_model_output=False, skip_model_name=None):
             if not (
                 metadata_path.exists()
                 and model_outputs_path.exists()
-                and cem_outputs_path.exists()
+                # and cem_outputs_path.exists()
             ):
                 continue
 
@@ -143,8 +143,11 @@ def get_data(data_path, save_cheap_model_output=False, skip_model_name=None):
             with open(model_outputs_path, "rb") as f:
                 model_outputs = pickle.load(f)
 
-            with open(cem_outputs_path, "rb") as f:
-                cem_outputs = pickle.load(f)
+            if os.path.exists(cem_outputs_path):
+                with open(cem_outputs_path, "rb") as f:
+                    cem_outputs = pickle.load(f)
+            else:
+                cem_outputs = None
 
             # Process the metadata and model outputs as needed
             print(f"Model: {model}, Experiment: {experiment}")
@@ -160,6 +163,7 @@ def get_data(data_path, save_cheap_model_output=False, skip_model_name=None):
             print(
                 f"MC Scores Shape: {mc_scores.shape}, IS Scores Shape: {is_scores.shape}"
             )
+            print(f"CEM {metadata['use_cem']}, Ablation {metadata['ablation_intensity']}, Num Particles {metadata['num_particles']}, Seed {metadata['seed']}")
             print(
                 "Variance: ",
                 ((mc_scores.mean(axis=1) - is_scores.mean(axis=1)) ** 2).mean(),
@@ -174,7 +178,7 @@ def get_data(data_path, save_cheap_model_output=False, skip_model_name=None):
 
             all_outputs[model_str] = model_outputs
 
-            del model_outputs
+            # del model_outputs
             del cem_outputs
 
             # # log-log plot
@@ -235,13 +239,17 @@ def get_data(data_path, save_cheap_model_output=False, skip_model_name=None):
 
 
 if __name__ == "__main__":
-    dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data(
-        "icml_unsafe_analysis_copy/", save_cheap_model_output=True
+    # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data(
+    #     "icml_unsafe_analysis_copy/", save_cheap_model_output=True
+    # )
+    
+    dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data(
+        "output_no_cem", save_cheap_model_output=False
     )
 
-    dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data("output_paraphrases_est_unsafe_to_unsafe/", save_cheap_model_output=True)
-    dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data("output_paraphrases_est_unsafe_to_unsafe_2/", save_cheap_model_output=True)
-    dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data("output_paraphrases_est_unsafe_to_unsafe_3/", save_cheap_model_output=True)
+    # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data("output_paraphrases_est_unsafe_to_unsafe/", save_cheap_model_output=True)
+    # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data("output_paraphrases_est_unsafe_to_unsafe_2/", save_cheap_model_output=True)
+    # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data("output_paraphrases_est_unsafe_to_unsafe_3/", save_cheap_model_output=True)
 
     # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data("output_paraphrases_est_unsafe_to_unsafe_copy/", save_cheap_model_output=True)
     # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data("output_llama_2/", save_cheap_model_output=True)

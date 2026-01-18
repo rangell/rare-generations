@@ -233,7 +233,7 @@ def main(args):
     #     args.mc_est_dataset = f"monte_carlo_estimates/results/strong_reject/{args.model_shortname}_mc_est_10k.json"
         
     if args.mc_est_dataset == "":
-        args.mc_est_dataset = f"3_combined_paraphrased_results_with_mc_{args.model_shortname}.json"
+        args.mc_est_dataset = f"combined_paraphrased_results_with_mc_{args.model_shortname}.json"
 
     if args.proposal_idx_switch == -1:
         args.proposal_idx_switch = args.max_new_tokens + 1
@@ -307,7 +307,7 @@ def main(args):
             "json",
             data_files=args.mc_est_dataset,
         )["train"]
-        mc_dataset = mc_dataset.select(range(min(int(args.cem_frac * len(mc_dataset)), 2)))
+        mc_dataset = mc_dataset.select(range(min(int(args.cem_frac * len(mc_dataset)), 5)))
 
         steering_coef_arr = [0.2, 0.3, 0.4, 0.5, 0.7, 0.8, 0.9, 1.0]
         proposal_idx_switch_arr = list(range(0, 151, 5))
@@ -332,6 +332,10 @@ def main(args):
     for prompt_idx, example in enumerate(mc_dataset):
         model_output_dict[prompt_idx] = {}
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
+        
+        
+        if prompt_idx >= args.limit_samples[0] and prompt_idx < args.limit_samples[1]:
+            continue
 
         print(
             f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}"
@@ -460,8 +464,8 @@ def add_arguments(parser):
         "--use_cem", action="store_true", help="Use CEM to select proposal model."
     )
     parser.add_argument(
-        "--cem_frac", type=float, default=0.005, help="Fraction of data to use for CEM."
-    )
+        "--cem_frac", type=float, default=0.1, help="Fraction of data to use for CEM."
+    )    
 
     ################### SPECIFIC ARGS #############################
 
@@ -479,10 +483,20 @@ def add_arguments(parser):
         default=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
         help="Available set of ablation intensities.",
     )
+    
+    parser.add_argument(
+        "--limit_samples",
+        type=str,
+        # nargs="+",  # Expects one or more space-separated int
+        # type=List[int],
+        default=[0, -1],
+        help="Available set of ablation intensities.",
+    )
 
     ###############################################################
 
 
 if __name__ == "__main__":
     args = get_args()
+    args.limit_samples = [int(x) for x in args.limit_samples.split(',')]    
     main(args)

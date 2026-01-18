@@ -328,6 +328,11 @@ def main(args):
 
     model_output_dict = {}
     for prompt_idx, example in enumerate(mc_dataset):
+        
+        # import pdb; pdb.set_trace()
+        if args.limit_samples is not None and prompt_idx >= args.limit_samples:
+            break
+        
         model_output_dict[prompt_idx] = {}
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
@@ -474,6 +479,12 @@ def add_arguments(parser):
         nargs="+",  # Expects one or more space-separated floats
         default=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
         help="Available set of ablation intensities.",
+    )
+    parser.add_argument(
+        "--limit_samples",
+        type=int,
+        default=None,
+        help="Limit the number of samples to process (for debugging).",
     )
 
     ###############################################################
