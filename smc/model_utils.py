@@ -1,5 +1,3 @@
-import copy
-from contextlib import contextmanager
 import os
 import json
 import weakref
@@ -18,6 +16,8 @@ from refusal_direction.pipeline.utils.hook_utils import (
     get_direction_ablation_output_hook,
 )
 
+from smc.utils import is_distributed
+
 
 def load_model_and_tokenizer(model_name_or_path):
     # NOTE: returns model in `eval` mode
@@ -28,15 +28,26 @@ def load_model_and_tokenizer(model_name_or_path):
     if isinstance(config, Qwen2Config):
         config = None
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
-        dtype=torch.bfloat16,
-        low_cpu_mem_usage=True,
-        device_map="auto",
-        token=os.getenv("HF_TOKEN"),
-        config=config,
-        trust_remote_code=True,
-    ).eval()
+    if is_distributed():
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path,
+            dtype=torch.bfloat16,
+            low_cpu_mem_usage=True,
+            tp_plan="auto",
+            token=os.getenv("HF_TOKEN"),
+            config=config,
+            trust_remote_code=True,
+        ).eval()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path,
+            dtype=torch.bfloat16,
+            low_cpu_mem_usage=True,
+            device_map="auto",
+            token=os.getenv("HF_TOKEN"),
+            config=config,
+            trust_remote_code=True,
+        ).eval()
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name_or_path,

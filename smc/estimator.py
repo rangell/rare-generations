@@ -5,11 +5,13 @@ import gc
 import math
 from typing import List, Optional, Callable, ContextManager, Dict
 from tqdm import tqdm, trange
-import numpy as np
 
 import torch
+import torch.distributed as dist
 from transformers import DynamicCache
+
 from smc.fk_steering import FKSteering, update_cache_after_resampling
+from smc.utils import custom_print, is_main_process, wait_for_everyone, is_distributed
 
 
 class HarmfulTraitEstimator(ABC):
@@ -50,7 +52,7 @@ class HarmfulTraitEstimator(ABC):
     def estimate_harmful_trait(
         self,
         prompt: str,
-        steering_coef: float,
+        steering_params: dict,
         proposal_idx_switch: Optional[int] = None,
         proposal_bias: Optional[float] = None,
     ):
@@ -87,12 +89,12 @@ class HarmfulTraitEstimator(ABC):
         outputs = self._generate(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            steering_coef=steering_coef,
+            steering_params=steering_params,
             proposal_idx_switch=proposal_idx_switch,
             proposal_bias=proposal_bias,
             prompt=prompt,
         )
-        print("\n-----------------------------------------------\n")
+        custom_print("\n-----------------------------------------------\n")
 
         harm_est = outputs["reweighted_scores"]
         return harm_est, outputs
@@ -202,7 +204,7 @@ class HarmfulTraitEstimator(ABC):
         self,
         input_ids,
         attention_mask,
-        steering_coef: float,
+        steering_params: dict,
         proposal_idx_switch: Optional[int] = None,
         proposal_bias: Optional[float] = None,
         prompt: str = "",
@@ -298,7 +300,7 @@ class HarmfulTraitEstimator(ABC):
             # Compute the proposal distribution
             with (
                 torch.no_grad(),
-                self.proposal_context_manager(steering_coef),
+                self.proposal_context_manager(**steering_params),
             ):
                 refusal_ablated_logits, proposal_past_key_values = (
                     self._model_ntp_wrapper(
@@ -420,7 +422,7 @@ class HarmfulTraitEstimator(ABC):
                         == torch.arange(num_particles, device=resample_indices.device)
                     ).item()
                 ):
-                    print(f"Resampling at step {generation_idx}")
+                    custom_print(f"Resampling at step {generation_idx}")
                     # import pdb; pdb.set_trace()
                     assert resample_indices.shape == (num_particles,), (
                         resample_indices.shape,
@@ -471,39 +473,47 @@ class HarmfulTraitEstimator(ABC):
             self.tokenizer.decode(r, skip_special_tokens=True)
             for r in _input_ids[:, input_ids.shape[1] :]
         ]
-        judge_scores = self.judge_responses(prompt, responses).to(input_ids.device)
+
+        judge_scores = [None]
+        if is_main_process():
+            judge_scores = [
+                self.judge_responses(prompt, responses).to(input_ids.device)
+            ]
+
+        wait_for_everyone()
+        if is_distributed():
+            dist.broadcast_object_list(judge_scores, src=0, device=input_ids.device)
+        judge_scores = judge_scores[0]
 
         if self.smc_args is None or self.smc_args["use_smc"] is False:
             reweighted_scores = judge_scores * importance_weights.squeeze(1)
-            print(f"SIS harm score estimate: {reweighted_scores.mean().item()}")
-            print(f"SIS harm score variance: {reweighted_scores.var().item()}")
-            print(
+            custom_print(f"SIS harm score estimate: {reweighted_scores.mean().item()}")
+            custom_print(f"SIS harm score variance: {reweighted_scores.var().item()}")
+            custom_print(
                 f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
             )
-            print(f"Judge scores: {judge_scores}")
+            custom_print(f"Judge scores: {judge_scores}")
 
             prompt_kl = -torch.mean(log_importance_weights).item()
-            print(f"KL divergence: {prompt_kl}")
+            custom_print(f"KL divergence: {prompt_kl}")
         elif self.smc_args["use_smc"]:
             reweighted_scores = fk_class.compute_fk_estimate(
                 test_function_values=judge_scores, importance_weights=importance_weights
             )
-            print(f"FK harm score estimate: {reweighted_scores.item()}")
+            custom_print(f"FK harm score estimate: {reweighted_scores.item()}")
             smc_quantities = fk_class.get_fk_quantities()
             sis = importance_weights.view(num_particles) * judge_scores
-            print(f"SIS harm score estimate: {sis.mean().item()}")
-            print(f"Judge scores: {judge_scores}")
+            custom_print(f"SIS harm score estimate: {sis.mean().item()}")
+            custom_print(f"Judge scores: {judge_scores}")
             prompt_kl = -torch.mean(log_importance_weights).item()
-            print(f"KL divergence: {prompt_kl}")
+            custom_print(f"KL divergence: {prompt_kl}")
         else:
             raise NotImplementedError
 
-        # print(f"Importance weight array: {importance_weight_arr[0]}")
-        print(
-            "Sequence generated:",
-            self.tokenizer.decode(_input_ids[0], skip_special_tokens=False),
+        custom_print(
+            f"Sequence generated: {self.tokenizer.decode(_input_ids[0], skip_special_tokens=False)}"
         )
-        print(f"Judge score: {judge_scores[0]}")
+        custom_print(f"Judge score: {judge_scores[0]}")
 
         ret = dict(
             responses=[
@@ -532,7 +542,7 @@ class HarmfulTraitEstimator(ABC):
         full_input_ids: Dict[str, torch.Tensor],
         completion_ids: Dict[str, torch.Tensor],
         judge_scores: torch.Tensor,
-        steering_coef_arr: List[float],
+        steering_params_arr: List[dict],
         proposal_idx_switch_arr: List[int],
         proposal_bias_arr: List[float],
     ):
@@ -549,11 +559,10 @@ class HarmfulTraitEstimator(ABC):
             judge_scores=judge_scores,
             prompt=prompt,
             importance_weights=importance_weights,
-            steering_coef_arr=steering_coef_arr,
+            steering_params_arr=steering_params_arr,
             proposal_idx_switch_arr=proposal_idx_switch_arr,
             proposal_bias_arr=proposal_bias_arr,
         )
-        # print("\n-----------------------------------------------\n")
 
         return outputs
 
@@ -604,7 +613,7 @@ class HarmfulTraitEstimator(ABC):
         prompt_len,
         importance_weights,
         judge_scores,
-        steering_coef_arr,
+        steering_params_arr,
         proposal_idx_switch_arr,
         proposal_bias_arr,
     ):
@@ -665,7 +674,7 @@ class HarmfulTraitEstimator(ABC):
         fwd_batch_size: int = 128,
         smc_args=None,
         low_vram_cache: bool = False,
-        steering_coef_arr: List[float] = None,
+        steering_params_arr: List[dict] = None,
         proposal_idx_switch_arr: List[int] = None,
         proposal_bias_arr: List[float] = None,
     ):
@@ -685,22 +694,24 @@ class HarmfulTraitEstimator(ABC):
             enable_cache=False,
         )
 
-        print("Running CEM!")
+        custom_print("Running CEM!")
 
-        print("Computing base logprobs...")
+        custom_print("Computing base logprobs...")
         with torch.no_grad():
             base_logprobs = self._model_forward_wrapper(**model_input)
-        print("Done.")
+        custom_print("Done.")
 
-        print("Computing proposal_logprobs with various steering coefficients...")
+        custom_print(
+            "Computing proposal_logprobs with various steering coefficients..."
+        )
         proposal_logprobs_arr = []
-        for steering_coef in tqdm(steering_coef_arr):
-            with torch.no_grad(), self.proposal_context_manager(steering_coef):
+        for steering_params in tqdm(steering_params_arr):
+            with torch.no_grad(), self.proposal_context_manager(**steering_params):
                 _proposal_logprobs = self._model_forward_wrapper(**model_input)
                 proposal_logprobs_arr.append(_proposal_logprobs)
-        print("Done.")
+        custom_print("Done.")
 
-        print("Computing cross entropy tensor...")
+        custom_print("Computing cross entropy tensor...")
         start_idx = prompt_len - 1
         base_logprobs = base_logprobs[None, :, start_idx:]
         proposal_logprobs = torch.stack(proposal_logprobs_arr)[:, :, start_idx:]
@@ -733,23 +744,11 @@ class HarmfulTraitEstimator(ABC):
             chunked_judge_scores,
             chunked_importance_weights,
         ):
-            
-            # print(batch_base_logprobs.shape,
-            #       batch_proposal_logprobs.shape,
-            #       batch_full_input_ids.shape,
-            #       batch_judge_scores.shape,
-            #       batch_importance_weights.shape)
-            # print(batch_judge_scores.mean(), batch_judge_scores.std())
-            # import pdb; pdb.set_trace()
-            
-            # torch.Size([1, 1, 150]) torch.Size([10, 1, 150]) torch.Size([1, 206]) torch.Size([1]) torch.Size([1, 1])
-            # tensor(0.2500) tensor(nan)
-            
             if batch_judge_scores.mean().item() == 0.0:
-                print("Skipping batch with all zero judge scores.")
+                custom_print("Skipping batch with all zero judge scores.")
                 zero_judge_batches += 1
                 continue
-            
+
             cross_entropy_tensor += self._compute_cross_entropy_tensor(
                 batch_base_logprobs,
                 batch_proposal_logprobs,
@@ -757,15 +756,15 @@ class HarmfulTraitEstimator(ABC):
                 prompt_len,
                 batch_importance_weights,
                 batch_judge_scores,
-                steering_coef_arr,
+                steering_params_arr,
                 proposal_idx_switch_arr,
                 proposal_bias_arr,
             )
 
-        print("Done.")
-        
+        custom_print("Done.")
+
         if zero_judge_batches == len(chunked_judge_scores):
-            print("All batches had zero judge scores. Returning zero tensor.")
+            custom_print("All batches had zero judge scores. Returning zero tensor.")
             return 0
-        
+
         return cross_entropy_tensor

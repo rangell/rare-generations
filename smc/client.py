@@ -6,6 +6,8 @@ import subprocess
 import threading
 from openai import AsyncOpenAI
 
+from smc.utils import is_main_process, wait_for_everyone
+
 
 class OutputStreamReader(threading.Thread):
     def __init__(self, proc, stop_reading_event, verbose):
@@ -19,8 +21,9 @@ class OutputStreamReader(threading.Thread):
             try:
                 lines = self._proc.stdout.readlines()
                 for line in lines:
-                    if self._verbose:
-                        print(f"[JUDGE SERVER] {line.strip()}", end="\r\n")
+                    # if self._verbose:
+                    #    print(f"[JUDGE SERVER] {line.strip()}", end="\r\n")
+                    pass
             except BlockingIOError:
                 # No data available to read at this moment
                 pass
@@ -33,10 +36,31 @@ class JudgeClient:
         self.verbose = verbose
 
     def __enter__(self) -> AsyncOpenAI:
+        client = None
+        if is_main_process():
+            client = self.enter_body()
+        wait_for_everyone()
+        return client
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool | None:
+        exit_val = None
+        if is_main_process():
+            exit_val = self.exit_body(exc_type, exc_value, traceback)
+        wait_for_everyone()
+        return exit_val
+
+    def enter_body(self) -> AsyncOpenAI:
         # TODO: if launch_script_path is empty we try using together ai
         # TODO: tensor parallel size in launch script
 
-        busy_gpu_subprocess = subprocess.Popen(["python", "misc/run_50xALL.py"])
+        busy_gpu_subprocess = subprocess.Popen(
+            ["python", "-u", "misc/run_50xALL.py", "2>&1", "/dev/null"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=1,
+            text=True,
+            start_new_session=True,
+        )
 
         command = ["sh", self.launch_script_path]
 
@@ -100,8 +124,9 @@ class JudgeClient:
         busy_gpu_subprocess.wait()
 
         return client
+        pass
 
-    def __exit__(self, exc_type, exc_value, traceback) -> bool | None:
+    def exit_body(self, exc_type, exc_value, traceback) -> bool | None:
         # Stop reading from the output stream of the judge server
         self.stop_reading_event.set()
         self.stream_reader.join()

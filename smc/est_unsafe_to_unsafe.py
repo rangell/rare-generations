@@ -92,13 +92,13 @@ def run_cem(
             full_input_ids.append(outputs["_input_ids"][i])
             completion_ids.append(outputs["_completion_ids"][i])
 
-    print(f"Length of completions: {len(completions)}")
-    print(f"Length of completion ids: {len(completion_ids)}")
-    print(f"Length of full input ids: {len(full_input_ids)}")
+    print(f"Length of completions: {len(completions)}", end="\r\n")
+    print(f"Length of completion ids: {len(completion_ids)}", end="\r\n")
+    print(f"Length of full input ids: {len(full_input_ids)}", end="\r\n")
 
     if len(completions) == 0:
-        print("WARNING: All generations were filtered out...")
-        print("Returning 0.0 for CEM estimate")
+        print("WARNING: All generations were filtered out...", end="\r\n")
+        print("Returning 0.0 for CEM estimate", end="\r\n")
         return 0.0
 
     cross_entropy_tensor = estimator.estimate_CEM_harmful_trait(
@@ -117,7 +117,8 @@ def run_cem(
             torch.argmin(cross_entropy_tensor), cross_entropy_tensor.shape
         )
         print(
-            f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}"
+            f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}",
+            end="\r\n",
         )
 
         _, _out = estimator.estimate_harmful_trait(
@@ -130,7 +131,6 @@ def run_cem(
         return cross_entropy_tensor / cross_entropy_tensor.sum()
     else:
         return 0
-        
 
 
 def merge_dicts(sink_dict, source_dict):
@@ -168,9 +168,12 @@ def set_proposal_hparams(
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
         print(
-            f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}"
+            f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}",
+            end="\r\n",
         )
-        print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
+        print(
+            f"Monte Carlo harm estimate: {float(np.mean(example['score']))}", end="\r\n"
+        )
 
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
         model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
@@ -178,18 +181,22 @@ def set_proposal_hparams(
         outputs = {}
 
         for sub_idx, ablation_intensity in enumerate(args.ablation_intensities):
-            print(f"Ablation intensity: {ablation_intensity}")
+            print(f"Ablation intensity: {ablation_intensity}", end="\r\n")
             print(
-                f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}"
+                f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}",
+                end="\r\n",
             )
-            print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
+            print(
+                f"Monte Carlo harm estimate: {float(np.mean(example['score']))}",
+                end="\r\n",
+            )
 
             _, _out = estimator.estimate_harmful_trait(
                 prompt=example["forbidden_prompt"],
                 steering_coef=ablation_intensity,
             )
 
-            print("\n-----------------------------------------------\n")
+            print("\n-----------------------------------------------\n", end="\r\n")
 
             outputs = merge_dicts(outputs, _out)
 
@@ -219,7 +226,8 @@ def set_proposal_hparams(
     args.proposal_idx_switch = proposal_idx_switch_arr[argmin_indices[1]]
     args.proposal_bias = proposal_bias_arr[argmin_indices[2]]
     print(
-        f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}"
+        f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}",
+        end="\r\n",
     )
 
 
@@ -236,9 +244,9 @@ def main(args):
     if args.proposal_idx_switch == -1:
         args.proposal_idx_switch = args.max_new_tokens + 1
 
-    print("\nArguments:\n-----------------------------------------------\n")
-    print("\n".join(f"{k}: {v}" for k, v in vars(args).items()))
-    print("\n-----------------------------------------------\n")
+    print("\nArguments:\n-----------------------------------------------\n", end="\r\n")
+    print("\n".join(f"{k}: {v}" for k, v in vars(args).items()), end="\r\n")
+    print("\n-----------------------------------------------\n", end="\r\n")
 
     output_dir = args.output_dir
     if not os.path.exists(output_dir):
@@ -250,10 +258,10 @@ def main(args):
     try:
         os.makedirs(output_dir)
     except FileExistsError:
-        print(f"Output directory {output_dir} already exists.")
+        print(f"Output directory {output_dir} already exists.", end="\r\n")
         # wait for a random time to avoid overwriting
         wait_time = random.randint(1, 200)
-        print(f"Waiting for {wait_time} seconds before proceeding...")
+        print(f"Waiting for {wait_time} seconds before proceeding...", end="\r\n")
         time.sleep(wait_time)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = args.output_dir
@@ -265,7 +273,7 @@ def main(args):
     metadata_file = os.path.join(output_dir, "metadata.json")
     with open(metadata_file, "w") as f:
         json.dump(metadata, f, indent=4)
-    print(f"Experiment metadata saved to {metadata_file}")
+    print(f"Experiment metadata saved to {metadata_file}", end="\r\n")
 
     # For reproducability
     random.seed(args.seed)
@@ -332,9 +340,12 @@ def main(args):
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
         print(
-            f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}"
+            f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}",
+            end="\r\n",
         )
-        print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
+        print(
+            f"Monte Carlo harm estimate: {float(np.mean(example['score']))}", end="\r\n"
+        )
 
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
         model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
@@ -346,7 +357,7 @@ def main(args):
             proposal_bias=args.proposal_bias,
         )
 
-        print("\n-----------------------------------------------\n")
+        print("\n-----------------------------------------------\n", end="\r\n")
 
         for key in outputs:
             model_output_dict[prompt_idx][key] = outputs[key]

@@ -1,13 +1,15 @@
 import torch
 import time
 
+torch.cuda.init()
 device = torch.device("cuda")
-
 
 model = torch.nn.Linear(1024 * 8, 1024)
 optimizer = torch.optim.Adam(model.parameters())
 
-print("Let's keep all ", torch.cuda.device_count(), "GPUs busy!")
+print(
+    "Let's keep all ", torch.cuda.device_count(), "GPUs busy!", end="\r\n", flush=True
+)
 
 if torch.cuda.device_count() > 1:
     model = torch.nn.DataParallel(model)
