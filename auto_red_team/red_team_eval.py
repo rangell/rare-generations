@@ -75,9 +75,10 @@ if __name__ == "__main__":
     # directory = "multi_seed_results_red_team_harm_est"
     # directory = "multi_seed_results_red_team_harm_est_no_opt"
     # directory = "original_eval_great_result_est"
-    directory = "NEW_RESULTS_NEW_PROPOSER"
+    # directory = "NEW_RESULTS_NEW_PROPOSER"
+    directory = "NEW_MED_HEAVY_RESULTS_NO_FEEDBACK"
     # files = glob.glob(f"{directory}/*/system_prompt.txt")
-    files = glob.glob(f"{directory}/*_baseline/system_prompt.txt")
+    files = glob.glob(f"{directory}/*/system_prompt.txt")
     
     num_particles = 500 #100 #500
     # files = glob.glob(f"{directory}/20250917_152205*/system_prompt.txt")

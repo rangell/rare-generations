@@ -1,14 +1,17 @@
 import logging
 from abc import ABC, abstractmethod
-
+from typing import Optional
 from tqdm import tqdm
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 from copy import deepcopy
 import numpy as np
 import os
 import json
+import pickle
+
 
 class Particle:
     def __init__(self, *, ancestor=None, data=None, score=None, generation=None, info=None, **kwargs):
@@ -96,16 +99,36 @@ class Experiment(ABC):
         logger.info(f"Best score: {best_score}, Mean score: {mean_score}, N={len(self.population)}")
         return dict(best_score=best_score, mean_score=mean_score, N=len(self.population))
 
-    def run(self, num_steps: int):
+    def run(self, num_steps: int, out_dir: Optional[str] = None, pop_stats_fname: str = 'pop_stats.json', population_fname: str = 'population.pkl'):
         logger.info(f"Running experiment for {num_steps} steps")
         pop_stats = [self.get_population_stats()]
+        step = -1
+        if out_dir is not None:
+            os.makedirs(out_dir, exist_ok=True)
+            self.write_historic_stats(pop_stats, os.path.join(out_dir, pop_stats_fname))
+            self.save_population(os.path.join(out_dir, population_fname))
+            population_at_step_path = os.path.join(out_dir, 'historical_populations', f'step_{step}.pkl')
+            os.makedirs(os.path.dirname(population_at_step_path), exist_ok=True)
+            self.save_population(population_at_step_path)
         for step in tqdm(range(num_steps), desc="Running experiment"):
             self.run_step()
             pop_stats.append(self.get_population_stats())
+            if out_dir is not None:
+                self.write_historic_stats(pop_stats, os.path.join(out_dir, pop_stats_fname))
+                self.save_population(os.path.join(out_dir, population_fname))
+                population_at_step_path = os.path.join(out_dir, 'historical_populations', f'step_{step}.pkl')
+                os.makedirs(os.path.dirname(population_at_step_path), exist_ok=True)
+                self.save_population(population_at_step_path)
         return self.population, pop_stats
 
-    def write_population_data(self, out_path: str):
+    def write_historic_stats(self, stats: dict, out_path: str):
         with open(out_path, 'w') as f:
+            json.dump(stats, f, indent=4)
+    
+    def save_population(self, out_path: str):
+        with open(out_path, 'wb') as f:
+            pickle.dump(self.population, f)
+        with open(out_path.replace('.pkl', '')+'.json', 'w') as f:
             json.dump([p.to_dict() for p in self.population], f, indent=4)
   
 if __name__ == "__main__":

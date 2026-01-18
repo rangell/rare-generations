@@ -227,15 +227,21 @@ def generate(
     proposal_idx_switch: int = 10,
     smc_args=None,
     threshold_for_harmful=None,
+    greedy=False,
+    temperature=1.0,
 ):
     """Implements simple greedy decoding."""
 
     assert forbidden_prompt != ""
+    assert temperature > 0.0
+   
 
     base_past_key_values = DynamicCache()
     proposal_past_key_values = DynamicCache()
 
     num_particles = input_ids.shape[0]
+    if greedy:
+        assert num_particles == 1, "Greedy generation only supports one particle"
 
     _input_ids = input_ids.detach().clone()
     _attention_mask = attention_mask.detach().clone()
@@ -291,7 +297,8 @@ def generate(
                 return_dict_in_generate=True,
                 output_hidden_states=False,
             )
-        base_logprobs = torch.log_softmax(base_logits[:, -1, :], dim=-1)
+            
+        base_logprobs = torch.log_softmax(base_logits[:, -1, :] / temperature, dim=-1)
 
         if generation_idx < proposal_idx_switch:
             # Compute the proposal distribution
@@ -316,7 +323,7 @@ def generate(
                     )
 
             proposal_logprobs = torch.log_softmax(
-                refusal_ablated_logits[:, -1, :], dim=-1
+                refusal_ablated_logits[:, -1, :] / temperature, dim=-1
             )
 
             # Linearly interpolate between distributions
@@ -327,10 +334,13 @@ def generate(
         else:
             proposal_logprobs = base_logprobs
 
-        next_tokens = torch.multinomial(
-            proposal_logprobs.exp(),
-            num_samples=1,
-        )
+        if greedy:
+            next_tokens = torch.argmax(proposal_logprobs, dim=-1).unsqueeze(-1)
+        else:
+            next_tokens = torch.multinomial(
+                proposal_logprobs.exp(),
+                num_samples=1,
+            )
         # Check if sequence is completed
         _completed_generation |= next_tokens == tokenizer.eos_token_id
 
