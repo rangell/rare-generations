@@ -37,7 +37,35 @@ def analyze_results(model_outputs):
     return arr_mc_scores, arr_is_scores
 
 
-def bootstrap_confidence_interval(data, num_bootstrap_samples=1000, confidence_level=0.95):
+# dict_keys(['forbidden_prompt', 'mc_scores', 'mc_mean', 'responses', '_input_ids', '_completion_ids', 'judge_scores', 'prompt_kl', 'importance_weights', 'reweighted_scores'])
+def get_cheap_model_output(model_outputs):
+    cheap_model_output = []
+    for prompt_idx in range(len(model_outputs)):
+        cheap_output_dict = {}
+        cheap_output_dict["forbidden_prompt"] = model_outputs[prompt_idx][
+            "forbidden_prompt"
+        ]
+        if 'original_forbidden_prompt' in model_outputs[prompt_idx]:
+            cheap_output_dict["original_forbidden_prompt"] = model_outputs[prompt_idx][
+                "original_forbidden_prompt"
+            ]
+        cheap_output_dict["mc_scores"] = model_outputs[prompt_idx]["mc_scores"]
+        cheap_output_dict["reweighted_scores"] = model_outputs[prompt_idx][
+            "reweighted_scores"
+        ]
+        cheap_output_dict["prompt_kl"] = model_outputs[prompt_idx]["prompt_kl"]
+        cheap_output_dict["importance_weights"] = model_outputs[prompt_idx][
+            "importance_weights"
+        ]
+        cheap_output_dict["judge_scores"] = model_outputs[prompt_idx]["judge_scores"]
+        cheap_model_output.append(cheap_output_dict)
+
+    return cheap_model_output
+
+
+def bootstrap_confidence_interval(
+    data, num_bootstrap_samples=1000, confidence_level=0.95
+):
     bootstrap_means = []
     n = len(data)
 
@@ -53,11 +81,11 @@ def bootstrap_confidence_interval(data, num_bootstrap_samples=1000, confidence_l
 
 def get_effective_sample_size(weights):
     weights = np.array(weights)
-    ess = (np.sum(weights) ** 2) / np.sum(weights ** 2)
+    ess = (np.sum(weights) ** 2) / np.sum(weights**2)
     return ess
 
 
-def get_data(data_path="./icml_unsafe_analysis_copy/"): 
+def get_data(data_path, save_cheap_model_output=False, skip_model_name=None):
     experiment_dir = Path(data_path)
     arr_models = os.listdir(experiment_dir)
 
@@ -75,11 +103,18 @@ def get_data(data_path="./icml_unsafe_analysis_copy/"):
             prompt_category_index[category] = []
         prompt_category_index[category].append(idx)
 
+    del llama_greedy_mc_estimate
+
     dict_mc_scores = {}
     dict_is_scores = {}
-    
+
+    dict_cem_outputs = {}
+
     all_outputs = {}
     for model in arr_models:
+        
+        if skip_model_name is not None and skip_model_name in model:
+            continue
         model_dir = experiment_dir / model
 
         if not model_dir.is_dir():
@@ -95,7 +130,11 @@ def get_data(data_path="./icml_unsafe_analysis_copy/"):
             model_outputs_path = experiment_path / "model_outputs.pkl"
             cem_outputs_path = experiment_path / "cem_model_outputs.pkl"
 
-            if not (metadata_path.exists() and model_outputs_path.exists()):
+            if not (
+                metadata_path.exists()
+                and model_outputs_path.exists()
+                and cem_outputs_path.exists()
+            ):
                 continue
 
             with open(metadata_path, "r") as f:
@@ -103,6 +142,9 @@ def get_data(data_path="./icml_unsafe_analysis_copy/"):
 
             with open(model_outputs_path, "rb") as f:
                 model_outputs = pickle.load(f)
+
+            with open(cem_outputs_path, "rb") as f:
+                cem_outputs = pickle.load(f)
 
             # Process the metadata and model outputs as needed
             print(f"Model: {model}, Experiment: {experiment}")
@@ -114,8 +156,6 @@ def get_data(data_path="./icml_unsafe_analysis_copy/"):
             model_str = f"{model}_{metadata['num_particles']}_{metadata['seed']}"
             dict_mc_scores[model_str] = torch.tensor(mc_scores)
             dict_is_scores[model_str] = torch.tensor(is_scores)
-            
-            all_outputs[model_str] = model_outputs
 
             print(
                 f"MC Scores Shape: {mc_scores.shape}, IS Scores Shape: {is_scores.shape}"
@@ -127,39 +167,85 @@ def get_data(data_path="./icml_unsafe_analysis_copy/"):
             print("MC Mean: ", mc_scores.mean())
             print("IS Mean: ", is_scores.mean())
 
-            # log-log plot
-            fig, ax = plt.subplots(1, 1, figsize=(6, 6))
-            ax.scatter(
-                (mc_scores.mean(axis=1).flatten()),
-                (is_scores.mean(axis=1).flatten()),
-                alpha=0.5,
-            )
-            ax.plot(
-                np.linspace(0, 1, 100), np.linspace(0, 1, 100), color="red", linestyle="--"
-            )
-            ax.set_xlim(1e-5, 1)
-            ax.set_ylim(1e-5, 1)
+            del mc_scores
+            del is_scores
 
-            plt.xscale("log")
-            plt.yscale("log")
-            # ax.plot([1e-10, 1e0], [1e-10, 1e0], color='red', linestyle='--')
-            ax.set_xlabel("MC Estimate")
-            ax.set_ylabel("IS Estimate")
-            ax.set_title(f"Model: {model}, Experiment: {experiment}")
-            plt.grid(True, which="both", ls="--", linewidth=0.5)
-            plt.savefig(f"log_log_plot_{model_str}.pdf")
+            dict_cem_outputs[model_str] = cem_outputs
+
+            all_outputs[model_str] = model_outputs
+
+            del model_outputs
+            del cem_outputs
+
+            # # log-log plot
+            # fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+            # ax.scatter(
+            #     (mc_scores.mean(axis=1).flatten()),
+            #     (is_scores.mean(axis=1).flatten()),
+            #     alpha=0.5,
+            # )
+            # ax.plot(
+            #     np.linspace(0, 1, 100), np.linspace(0, 1, 100), color="red", linestyle="--"
+            # )
+            # ax.set_xlim(1e-5, 1)
+            # ax.set_ylim(1e-5, 1)
+
+            # plt.xscale("log")
+            # plt.yscale("log")
+            # # ax.plot([1e-10, 1e0], [1e-10, 1e0], color='red', linestyle='--')
+            # ax.set_xlabel("Monte Carlo Estimate")
+            # ax.set_ylabel("Importance Sampling Estimate")
+            # ax.set_title(f"Model: {model}")
+            # plt.grid(True, which="both", ls="--", linewidth=0.5)
+            # plt.savefig(f"log_log_plot_{model_str}.pdf")
 
             # for
             print("-----")
             print("\n")
 
-            # break
+            if save_cheap_model_output:
+                cheaper_model_output = get_cheap_model_output(model_outputs)
+                del model_outputs
+                new_path = Path("/gpfs/data/ranganathlab/singhr36/rare-generations")
+                new_path = (
+                    new_path / "cheap_model_outputs" / data_path / model / experiment
+                )
+                # import pdb; pdb.set_trace()
+                os.makedirs(new_path, exist_ok=True)
+                cheap_model_output_path = new_path / "cheap_model_output.pkl"
+                # import pdb; pdb.set_trace()
+                # pickle dump of cheap model output
+                with open(cheap_model_output_path, "wb") as f:
+                    pickle.dump(
+                        {"model_output": cheaper_model_output, "metadata": metadata}, f
+                    )
 
-    return dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs
+                del cheaper_model_output
+
+                print(f"Saved cheap model output to {cheap_model_output_path}")
+                # break
+
+    return (
+        dict_mc_scores,
+        dict_is_scores,
+        prompt_category_index,
+        all_outputs,
+        dict_cem_outputs,
+    )
 
 
 if __name__ == "__main__":
-    dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data()
+    dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data(
+        "icml_unsafe_analysis_copy/", save_cheap_model_output=True
+    )
+
+    dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data("output_paraphrases_est_unsafe_to_unsafe/", save_cheap_model_output=True)
+    dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data("output_paraphrases_est_unsafe_to_unsafe_2/", save_cheap_model_output=True)
+    dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data("output_paraphrases_est_unsafe_to_unsafe_3/", save_cheap_model_output=True)
+
+    # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data("output_paraphrases_est_unsafe_to_unsafe_copy/", save_cheap_model_output=True)
+    # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data("output_llama_2/", save_cheap_model_output=True)
+    # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data("output_llama_2/", save_cheap_model_output=True)
 # from IPython import embed
 
 # embed()

@@ -223,15 +223,17 @@ def set_proposal_hparams(
     )
 
 
-def main(args):    
-    
+def main(args):
     args.model_shortname = args.model_name.split("/")[1]
     args.refusal_direction_path = (
         f"refusal_direction/pipeline/runs/{args.model_shortname}/"
-    )        
-    
+    )
+
+    # if args.mc_est_dataset == "":
+    #     args.mc_est_dataset = f"monte_carlo_estimates/results/strong_reject/{args.model_shortname}_mc_est_10k.json"
+        
     if args.mc_est_dataset == "":
-        args.mc_est_dataset = f"monte_carlo_estimates/results/strong_reject/{args.model_shortname}_mc_est_10k.json"
+        args.mc_est_dataset = f"3_combined_paraphrased_results_with_mc_{args.model_shortname}.json"
 
     if args.proposal_idx_switch == -1:
         args.proposal_idx_switch = args.max_new_tokens + 1
@@ -305,11 +307,11 @@ def main(args):
             "json",
             data_files=args.mc_est_dataset,
         )["train"]
-        mc_dataset = mc_dataset.select(range(int(args.cem_frac * len(mc_dataset))))
+        mc_dataset = mc_dataset.select(range(min(int(args.cem_frac * len(mc_dataset)), 2)))
 
-        steering_coef_arr = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        steering_coef_arr = [0.2, 0.3, 0.4, 0.5, 0.7, 0.8, 0.9, 1.0]
         proposal_idx_switch_arr = list(range(0, 151, 5))
-        proposal_bias_arr = np.linspace(0, 1, 25)
+        proposal_bias_arr = np.linspace(0, 1, 10)
         set_proposal_hparams(
             args,
             output_dir,
@@ -338,6 +340,8 @@ def main(args):
 
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
         model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
+        if "original_forbidden_prompt" in example:
+            model_output_dict[prompt_idx]["original_forbidden_prompt"] = example["original_forbidden_prompt"]
 
         _, outputs = estimator.estimate_harmful_trait(
             prompt=example["forbidden_prompt"],
@@ -456,7 +460,7 @@ def add_arguments(parser):
         "--use_cem", action="store_true", help="Use CEM to select proposal model."
     )
     parser.add_argument(
-        "--cem_frac", type=float, default=0.1, help="Fraction of data to use for CEM."
+        "--cem_frac", type=float, default=0.005, help="Fraction of data to use for CEM."
     )
 
     ################### SPECIFIC ARGS #############################

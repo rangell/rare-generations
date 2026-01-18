@@ -80,7 +80,7 @@ class HarmfulTraitEstimator(ABC):
         torch.cuda.empty_cache()
 
         # reward function for SMC
-        # Just past to SMC as r_fn=reward_fn
+         # Just past to SMC as r_fn=reward_fn
         if self.smc_args is not None and self.smc_args["use_smc"]:
             self.smc_args["r_fn"] = self.create_reward_function(prompt)
         # Generate
