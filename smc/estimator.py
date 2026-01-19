@@ -53,6 +53,7 @@ class HarmfulTraitEstimator(ABC):
         steering_coef: float,
         proposal_idx_switch: Optional[int] = None,
         proposal_bias: Optional[float] = None,
+        original_forbidden_prompt: Optional[str] = None,
     ):
         # Initialize the conversation
         messages = [
@@ -80,7 +81,7 @@ class HarmfulTraitEstimator(ABC):
         torch.cuda.empty_cache()
 
         # reward function for SMC
-         # Just past to SMC as r_fn=reward_fn
+        # Just past to SMC as r_fn=reward_fn
         if self.smc_args is not None and self.smc_args["use_smc"]:
             self.smc_args["r_fn"] = self.create_reward_function(prompt)
         # Generate
@@ -91,6 +92,7 @@ class HarmfulTraitEstimator(ABC):
             proposal_idx_switch=proposal_idx_switch,
             proposal_bias=proposal_bias,
             prompt=prompt,
+            original_forbidden_prompt=original_forbidden_prompt,
         )
         print("\n-----------------------------------------------\n")
 
@@ -206,6 +208,7 @@ class HarmfulTraitEstimator(ABC):
         proposal_idx_switch: Optional[int] = None,
         proposal_bias: Optional[float] = None,
         prompt: str = "",
+        original_forbidden_prompt: Optional[str] = None,
     ):
         """Implements rare event estimation using sequential Monte Carlo."""
         assert prompt != ""
@@ -472,6 +475,12 @@ class HarmfulTraitEstimator(ABC):
             for r in _input_ids[:, input_ids.shape[1] :]
         ]
         judge_scores = self.judge_responses(prompt, responses).to(input_ids.device)
+        if original_forbidden_prompt is not None:
+            original_judge_scores = self.judge_responses(
+                original_forbidden_prompt, responses
+            ).to(input_ids.device)
+        else:
+            original_judge_scores = None
 
         if self.smc_args is None or self.smc_args["use_smc"] is False:
             reweighted_scores = judge_scores * importance_weights.squeeze(1)
@@ -481,20 +490,23 @@ class HarmfulTraitEstimator(ABC):
                 f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
             )
             print(f"Judge scores: {judge_scores}")
+            if original_judge_scores is not None:
+                print(f"Original judge scores: {original_judge_scores}")
 
             prompt_kl = -torch.mean(log_importance_weights).item()
             print(f"KL divergence: {prompt_kl}")
         elif self.smc_args["use_smc"]:
-            reweighted_scores = fk_class.compute_fk_estimate(
-                test_function_values=judge_scores, importance_weights=importance_weights
-            )
-            print(f"FK harm score estimate: {reweighted_scores.item()}")
-            smc_quantities = fk_class.get_fk_quantities()
-            sis = importance_weights.view(num_particles) * judge_scores
-            print(f"SIS harm score estimate: {sis.mean().item()}")
-            print(f"Judge scores: {judge_scores}")
-            prompt_kl = -torch.mean(log_importance_weights).item()
-            print(f"KL divergence: {prompt_kl}")
+            raise NotImplementedError
+            # reweighted_scores = fk_class.compute_fk_estimate(
+            #     test_function_values=judge_scores, importance_weights=importance_weights
+            # )
+            # print(f"FK harm score estimate: {reweighted_scores.item()}")
+            # smc_quantities = fk_class.get_fk_quantities()
+            # sis = importance_weights.view(num_particles) * judge_scores
+            # print(f"SIS harm score estimate: {sis.mean().item()}")
+            # print(f"Judge scores: {judge_scores}")
+            # prompt_kl = -torch.mean(log_importance_weights).item()
+            # print(f"KL divergence: {prompt_kl}")
         else:
             raise NotImplementedError
 
@@ -513,6 +525,7 @@ class HarmfulTraitEstimator(ABC):
             _input_ids=_input_ids.cpu().numpy().tolist(),
             _completion_ids=_input_ids[:, input_ids.shape[1] :].cpu().numpy().tolist(),
             judge_scores=judge_scores.cpu().numpy(),
+            original_judge_scores=original_judge_scores.cpu().numpy() if original_judge_scores is not None else None,
             prompt_kl=prompt_kl,
             importance_weights=importance_weights.cpu().numpy(),
             reweighted_scores=reweighted_scores.mean().item(),
@@ -733,7 +746,7 @@ class HarmfulTraitEstimator(ABC):
             chunked_judge_scores,
             chunked_importance_weights,
         ):
-            
+
             # print(batch_base_logprobs.shape,
             #       batch_proposal_logprobs.shape,
             #       batch_full_input_ids.shape,
@@ -741,15 +754,15 @@ class HarmfulTraitEstimator(ABC):
             #       batch_importance_weights.shape)
             # print(batch_judge_scores.mean(), batch_judge_scores.std())
             # import pdb; pdb.set_trace()
-            
+
             # torch.Size([1, 1, 150]) torch.Size([10, 1, 150]) torch.Size([1, 206]) torch.Size([1]) torch.Size([1, 1])
             # tensor(0.2500) tensor(nan)
-            
+
             if batch_judge_scores.mean().item() == 0.0:
                 print("Skipping batch with all zero judge scores.")
                 zero_judge_batches += 1
                 continue
-            
+
             cross_entropy_tensor += self._compute_cross_entropy_tensor(
                 batch_base_logprobs,
                 batch_proposal_logprobs,
@@ -763,9 +776,9 @@ class HarmfulTraitEstimator(ABC):
             )
 
         print("Done.")
-        
+
         if zero_judge_batches == len(chunked_judge_scores):
             print("All batches had zero judge scores. Returning zero tensor.")
             return 0
-        
+
         return cross_entropy_tensor

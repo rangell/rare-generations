@@ -307,7 +307,7 @@ def main(args):
             "json",
             data_files=args.mc_est_dataset,
         )["train"]
-        mc_dataset = mc_dataset.select(range(min(int(args.cem_frac * len(mc_dataset)), 5)))
+        mc_dataset = mc_dataset.select(range(min(int(args.cem_frac * len(mc_dataset)), 4)))
 
         steering_coef_arr = [0.2, 0.3, 0.4, 0.5, 0.7, 0.8, 0.9, 1.0]
         proposal_idx_switch_arr = list(range(0, 151, 5))
@@ -334,12 +334,17 @@ def main(args):
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
         
         
-        if prompt_idx >= args.limit_samples[0] and prompt_idx < args.limit_samples[1]:
+        if prompt_idx < args.limit_samples[0] or prompt_idx >= args.limit_samples[1]:
             continue
 
         print(
             f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}"
         )
+        
+        if "original_forbidden_prompt" in example:
+            print(f"Original forbidden prompt: {example['original_forbidden_prompt']}")
+            model_output_dict[prompt_idx]["original_forbidden_prompt"] = example["original_forbidden_prompt"]
+        
         print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
 
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
@@ -349,6 +354,7 @@ def main(args):
 
         _, outputs = estimator.estimate_harmful_trait(
             prompt=example["forbidden_prompt"],
+            original_forbidden_prompt=example.get("original_forbidden_prompt", None),
             steering_coef=args.ablation_intensity,
             proposal_idx_switch=args.proposal_idx_switch,
             proposal_bias=args.proposal_bias,
@@ -356,6 +362,8 @@ def main(args):
 
         print("\n-----------------------------------------------\n")
 
+        # import pdb; pdb.set_trace()
+        
         for key in outputs:
             model_output_dict[prompt_idx][key] = outputs[key]
 

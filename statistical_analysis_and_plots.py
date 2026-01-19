@@ -85,7 +85,7 @@ def get_effective_sample_size(weights):
     return ess
 
 
-def get_data(data_path, save_cheap_model_output=False, skip_model_name=None):
+def get_data(data_path, save_cheap_model_output=False, skip_model_name=None, min_sample_size=None):
     experiment_dir = Path(data_path)
     arr_models = os.listdir(experiment_dir)
 
@@ -155,10 +155,30 @@ def get_data(data_path, save_cheap_model_output=False, skip_model_name=None):
             # print(f"Length of Model Outputs: {len(model_outputs.keys())}")
 
             mc_scores, is_scores = analyze_results(model_outputs)
-
             model_str = f"{model}_{metadata['num_particles']}_{metadata['seed']}"
-            dict_mc_scores[model_str] = torch.tensor(mc_scores)
-            dict_is_scores[model_str] = torch.tensor(is_scores)
+                        
+            if min_sample_size is not None and is_scores.shape[0] < min_sample_size:
+                print(f"Skipping {model_str} because it has less than {min_sample_size} samples.")
+                continue
+            
+            print('Not outptutting model responses and completion ids to save memory since we only need the scores for analysis.')            
+            for _idx in range(len(model_outputs)):
+                model_outputs[_idx]['responses'] = None
+                model_outputs[_idx]['_completion_ids'] = None
+        
+            if metadata["use_cem"] is False:
+                model_str += f"_no_cem_{metadata['ablation_intensity']}"                        
+                
+                dict_mc_scores[model_str] = None
+                for _idx in range(len(model_outputs)):
+                    model_outputs[_idx]['responses'] = None
+                    model_outputs[_idx]['_completion_ids'] = None
+                # import pdb; pdb.set_trace()
+
+            mc_scores = torch.tensor(mc_scores)
+            is_scores = torch.tensor(is_scores)
+            dict_mc_scores[model_str] = mc_scores
+            dict_is_scores[model_str] = is_scores
 
             print(
                 f"MC Scores Shape: {mc_scores.shape}, IS Scores Shape: {is_scores.shape}"
