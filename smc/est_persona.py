@@ -132,10 +132,10 @@ def main_wrapper(args):
     # setup_process(args.rank, args.world_size)
 
     try:
-        with JudgeClient(args.judge_launch_script, verbose=True) as judge_client:
-            main(args, judge_client)
+        # with JudgeClient(args.judge_launch_script, verbose=True) as judge_client:
+        #    main(args, judge_client)
 
-        # main(args, None)
+        main(args, None)
     finally:
         # Clean up
         dist.destroy_process_group()

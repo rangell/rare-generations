@@ -8,7 +8,7 @@ from tqdm import tqdm, trange
 
 import torch
 import torch.distributed as dist
-from transformers import DynamicCache
+from transformers import DynamicCache, StaticCache
 
 from smc.fk_steering import FKSteering, update_cache_after_resampling
 from smc.utils import custom_print, is_main_process, wait_for_everyone, is_distributed
@@ -82,7 +82,7 @@ class HarmfulTraitEstimator(ABC):
         torch.cuda.empty_cache()
 
         # reward function for SMC
-         # Just past to SMC as r_fn=reward_fn
+        # Just past to SMC as r_fn=reward_fn
         if self.smc_args is not None and self.smc_args["use_smc"]:
             self.smc_args["r_fn"] = self.create_reward_function(prompt)
         # Generate
@@ -212,11 +212,22 @@ class HarmfulTraitEstimator(ABC):
         """Implements rare event estimation using sequential Monte Carlo."""
         assert prompt != ""
 
-        base_past_key_values = DynamicCache(
-            config=self.model.config, offloading=self.args.low_vram_cache
+        # base_past_key_values = DynamicCache(
+        #    config=self.model.config, offloading=self.args.low_vram_cache
+        # )
+        # proposal_past_key_values = DynamicCache(
+        #    config=self.model.config, offloading=self.args.low_vram_cache
+        # )
+
+        base_past_key_values = StaticCache(
+            config=self.model.config,
+            max_cache_len=input_ids.shape[1] + self.args.max_new_tokens,
+            offloading=self.args.low_vram_cache,
         )
-        proposal_past_key_values = DynamicCache(
-            config=self.model.config, offloading=self.args.low_vram_cache
+        proposal_past_key_values = StaticCache(
+            config=self.model.config,
+            max_cache_len=input_ids.shape[1] + self.args.max_new_tokens,
+            offloading=self.args.low_vram_cache,
         )
 
         num_particles = input_ids.shape[0]
@@ -384,80 +395,80 @@ class HarmfulTraitEstimator(ABC):
                 cache_position[-1:] + 1
             )  # add one more position for the next token
 
-            if self.smc_args is not None and self.smc_args["use_smc"]:
-                p_q_t = torch.exp(
-                    base_next_token_logprobs - proposal_next_token_logprobs
-                ).view(-1)
+            # if self.smc_args is not None and self.smc_args["use_smc"]:
+            #    p_q_t = torch.exp(
+            #        base_next_token_logprobs - proposal_next_token_logprobs
+            #    ).view(-1)
 
-                if (
-                    generation_idx in fk_class.resampling_arr
-                    and self.smc_args["use_smc"]
-                ):
-                    rs_candidates = self.smc_args["r_fn"](_input_ids)
-                else:
-                    rs_candidates = None
+            #    if (
+            #        generation_idx in fk_class.resampling_arr
+            #        and self.smc_args["use_smc"]
+            #    ):
+            #        rs_candidates = self.smc_args["r_fn"](_input_ids)
+            #    else:
+            #        rs_candidates = None
 
-                resample_indices = fk_class(
-                    step_idx=generation_idx,
-                    importance_weights=copy.deepcopy(p_q_t),
-                    sequences=copy.deepcopy(_input_ids),
-                    rs_candidates=copy.deepcopy(rs_candidates),
-                )
+            #    resample_indices = fk_class(
+            #        step_idx=generation_idx,
+            #        importance_weights=copy.deepcopy(p_q_t),
+            #        sequences=copy.deepcopy(_input_ids),
+            #        rs_candidates=copy.deepcopy(rs_candidates),
+            #    )
 
-                if (
-                    not (resample_indices.cpu() == torch.arange(num_particles))
-                    .all()
-                    .item()
-                ):
-                    base_past_key_values = update_cache_after_resampling(
-                        past_key_values=base_past_key_values,
-                        indices=resample_indices,
-                        model_config=self.model.config,
-                    )
+            #    if (
+            #        not (resample_indices.cpu() == torch.arange(num_particles))
+            #        .all()
+            #        .item()
+            #    ):
+            #        base_past_key_values = update_cache_after_resampling(
+            #            past_key_values=base_past_key_values,
+            #            indices=resample_indices,
+            #            model_config=self.model.config,
+            #        )
 
-                if (
-                    generation_idx in fk_class.resampling_arr
-                    and not torch.all(
-                        resample_indices
-                        == torch.arange(num_particles, device=resample_indices.device)
-                    ).item()
-                ):
-                    custom_print(f"Resampling at step {generation_idx}")
-                    # import pdb; pdb.set_trace()
-                    assert resample_indices.shape == (num_particles,), (
-                        resample_indices.shape,
-                        (num_particles,),
-                    )
+            #    if (
+            #        generation_idx in fk_class.resampling_arr
+            #        and not torch.all(
+            #            resample_indices
+            #            == torch.arange(num_particles, device=resample_indices.device)
+            #        ).item()
+            #    ):
+            #        custom_print(f"Resampling at step {generation_idx}")
+            #        # import pdb; pdb.set_trace()
+            #        assert resample_indices.shape == (num_particles,), (
+            #            resample_indices.shape,
+            #            (num_particles,),
+            #        )
 
-                    _input_ids = copy.deepcopy(_input_ids[resample_indices])
-                    _attention_mask = copy.deepcopy(_attention_mask[resample_indices])
-                    _inputs = {
-                        "input_ids": next_tokens[resample_indices],
-                        "attention_mask": _attention_mask,
-                    }
+            #        _input_ids = copy.deepcopy(_input_ids[resample_indices])
+            #        _attention_mask = copy.deepcopy(_attention_mask[resample_indices])
+            #        _inputs = {
+            #            "input_ids": next_tokens[resample_indices],
+            #            "attention_mask": _attention_mask,
+            #        }
 
-                    _completed_generation = copy.deepcopy(
-                        _completed_generation[resample_indices]
-                    )
-                    log_importance_weights = copy.deepcopy(
-                        log_importance_weights[resample_indices]
-                    )
+            #        _completed_generation = copy.deepcopy(
+            #            _completed_generation[resample_indices]
+            #        )
+            #        log_importance_weights = copy.deepcopy(
+            #            log_importance_weights[resample_indices]
+            #        )
 
-                    log_importance_weight_arr = [
-                        log_arr[resample_indices, :]
-                        for log_arr in log_importance_weight_arr
-                    ]
+            #        log_importance_weight_arr = [
+            #            log_arr[resample_indices, :]
+            #            for log_arr in log_importance_weight_arr
+            #        ]
 
-                    base_past_key_values = update_cache_after_resampling(
-                        past_key_values=base_past_key_values,
-                        indices=resample_indices,
-                        model_config=self.model.config,
-                    )
-                    proposal_past_key_values = update_cache_after_resampling(
-                        past_key_values=proposal_past_key_values,
-                        indices=resample_indices,
-                        model_config=self.model.config,
-                    )
+            #        base_past_key_values = update_cache_after_resampling(
+            #            past_key_values=base_past_key_values,
+            #            indices=resample_indices,
+            #            model_config=self.model.config,
+            #        )
+            #        proposal_past_key_values = update_cache_after_resampling(
+            #            past_key_values=proposal_past_key_values,
+            #            indices=resample_indices,
+            #            model_config=self.model.config,
+            #        )
 
             ### END OF GENERATION LOOP
 
@@ -483,7 +494,8 @@ class HarmfulTraitEstimator(ABC):
         wait_for_everyone()
         if is_distributed():
             dist.broadcast_object_list(judge_scores, src=0, device=input_ids.device)
-        judge_scores = judge_scores[0]
+        judge_scores = judge_scores[0].to(input_ids.device)
+        # judge_scores = torch.zeros((num_particles,), device=input_ids.device)
 
         if self.smc_args is None or self.smc_args["use_smc"] is False:
             reweighted_scores = judge_scores * importance_weights.squeeze(1)
