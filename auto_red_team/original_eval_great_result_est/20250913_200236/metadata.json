@@ -1,0 +1,7 @@
+{
+    "setting": "toxic_old_proposal_result",
+    "num_forbidden_prompts": 5,
+    "teacher_model": "xai/grok-3",
+    "workload": "light",
+    "seed": -1
+}
