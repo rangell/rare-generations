@@ -106,30 +106,41 @@ def set_proposal_hparams(
         custom_print(
             f"Forbidden prompt ({prompt_idx + 1}/{len(mc_dataset)}): {example['forbidden_prompt']}"
         )
+        custom_print(f"Monte Carlo harm estimate: {float(example['harm_mean'])}")
+
+        model_output_dict[prompt_idx]["mc_scores"] = example["harm_scores"]
+        model_output_dict[prompt_idx]["mc_mean"] = float(example["harm_mean"])
+
         # custom_print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
 
         # model_output_dict[prompt_idx]["mc_scores"] = example["score"]
         # model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
 
-        outputs = {}
+        _, outputs = estimator.estimate_harmful_trait(
+            prompt=example["forbidden_prompt"],
+            steering_params=args.steering_params,
+            proposal_bias=args.proposal_bias,
+            proposal_idx_switch=args.proposal_idx_switch,
+        )
 
-        for sub_idx, steering_params in enumerate(steering_params_arr):
-            wait_for_everyone()
-            custom_print(f"Steering params: {steering_params}")
-            custom_print(
-                f"Forbidden prompt ({prompt_idx + 1}/{len(mc_dataset)}): {example['forbidden_prompt']}",
-            )
-            # custom_print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}", )
-            #
-            _, _out = estimator.estimate_harmful_trait(
-                prompt=example["forbidden_prompt"], steering_params=steering_params
-            )
-
-            custom_print(
-                "\n-----------------------------------------------\n",
-            )
-
-            outputs = merge_dicts(outputs, _out)
+        # outputs = {}
+        # for sub_idx, steering_params in enumerate(steering_params_arr):
+        #     wait_for_everyone()
+        #     custom_print(f"Steering params: {steering_params}")
+        #     custom_print(
+        #         f"Forbidden prompt ({prompt_idx + 1}/{len(mc_dataset)}): {example['forbidden_prompt']}",
+        #     )
+        #     # custom_print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}", )
+        #     #
+        #     _, _out = estimator.estimate_harmful_trait(
+        #         prompt=example["forbidden_prompt"], steering_params=steering_params
+        #     )
+        #
+        #     custom_print(
+        #         "\n-----------------------------------------------\n",
+        #     )
+        #
+        #     outputs = merge_dicts(outputs, _out)
 
         cross_entropy_tensor += run_cem(
             estimator,
@@ -139,6 +150,8 @@ def set_proposal_hparams(
             proposal_idx_switch_arr,
             proposal_bias_arr,
         )
+
+        custom_print(f"cross_entropy_tensor: {cross_entropy_tensor}")
 
         for key in outputs:
             model_output_dict[prompt_idx][key] = outputs[key]

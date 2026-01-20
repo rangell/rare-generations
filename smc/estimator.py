@@ -651,8 +651,14 @@ class HarmfulTraitEstimator(ABC):
         eos_token_mask = full_input_ids[:, prompt_len:] == self.tokenizer.eos_token_id
         eos_token_mask = eos_token_mask.expand(*mixing_logprobs.shape)
 
+        from IPython import embed
+
+        embed()
+        exit()
+
         mixing_logprobs[proposal_switch_mask] = base_logprobs[proposal_switch_mask]
         mixing_logprobs[eos_token_mask] = 0.0
+
         mixing_logprobs = mixing_logprobs.sum(dim=-1)
 
         judge_scores = (
@@ -707,6 +713,9 @@ class HarmfulTraitEstimator(ABC):
         )
 
         custom_print("Running CEM!")
+        custom_print(f"steering_params_arr: {steering_params_arr}")
+        custom_print(f"proposal_idx_switch_arr: {proposal_idx_switch_arr}")
+        custom_print(f"proposal_bias_arr: {proposal_bias_arr}")
 
         custom_print("Computing base logprobs...")
         with torch.no_grad():
