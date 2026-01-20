@@ -84,16 +84,14 @@ class PersonaEstimator(HarmfulTraitEstimator):
     ) -> torch.Tensor:
         judge_scores = {}
         for metric_name, judge in self.judges.items():
-            judge_scores[metric_name] = torch.tensor(
-                await asyncio.gather(
-                    *[
-                        judge(
-                            client=self.judge_client, question=prompt, answer=response
-                        )
-                        for response in responses
-                    ]
-                )
+            _scores = await asyncio.gather(
+                *[
+                    judge(client=self.judge_client, question=prompt, answer=response)
+                    for response in responses
+                ]
             )
+            _scores = [s if s is not None else 0.0 for s in _scores]
+            judge_scores[metric_name] = torch.tensor(_scores)
 
         custom_print(judge_scores)
         return (
@@ -132,10 +130,10 @@ def main_wrapper(args):
     # setup_process(args.rank, args.world_size)
 
     try:
-        # with JudgeClient(args.judge_launch_script, verbose=True) as judge_client:
-        #    main(args, judge_client)
+        with JudgeClient(args.judge_launch_script, verbose=True) as judge_client:
+            main(args, judge_client)
 
-        main(args, None)
+        # main(args, None)
     finally:
         # Clean up
         dist.destroy_process_group()
@@ -207,9 +205,10 @@ def main(args, judge_client):
         )["train"]
         mc_dataset = mc_dataset.select(range(int(args.cem_frac * len(mc_dataset))))
 
-        steering_coef_arr = list(
-            np.array([-0.5, -0.25, 0, 0.25, 0.5]) + args.steering_coef
-        )
+        # steering_coef_arr = list(
+        #    np.array([-0.5, -0.25, 0, 0.25, 0.5]) + args.steering_coef
+        # )
+        steering_coef_arr = list(np.array([0]) + args.steering_coef)
         steering_layer_arr = (
             np.array([-0.1, -0.05, 0, 0.05, 0.1]) * model.config.num_hidden_layers
         )
@@ -226,14 +225,7 @@ def main(args, judge_client):
             )
         ]
         proposal_idx_switch_arr = [0] + sorted(
-            list(
-                set(
-                    [
-                        int(np.exp(x))
-                        for x in np.linspace(0, np.log(args.max_new_tokens), 25)
-                    ]
-                )
-            )
+            list(set([int(np.exp(x)) for x in np.linspace(0, args.max_new_tokens, 25)]))
         )
         proposal_bias_arr = np.linspace(0, 1, 25)
 
@@ -258,20 +250,20 @@ def main(args, judge_client):
         model_output_dict[prompt_idx] = {}
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
 
-        custom_print(f"Prompt: {example['forbidden_prompt']}", end="\r\n")
-        custom_print(
-            f"Monte Carlo harm estimate: {float(example['harm_mean'])}", end="\r\n"
-        )
+        custom_print(f"Prompt: {example['forbidden_prompt']}")
+        custom_print(f"Monte Carlo harm estimate: {float(example['harm_mean'])}")
 
         model_output_dict[prompt_idx]["mc_scores"] = example["harm_scores"]
         model_output_dict[prompt_idx]["mc_mean"] = float(example["harm_mean"])
 
         _, outputs = estimator.estimate_harmful_trait(
             prompt=example["forbidden_prompt"],
-            steering_params=args.best_steering_params,
+            steering_params=args.steering_params,
+            proposal_bias=args.proposal_bias,
+            proposal_idx_switch=args.proposal_idx_switch,
         )
 
-        custom_print("\n-----------------------------------------------\n", end="\r\n")
+        custom_print("\n-----------------------------------------------\n")
 
         for key in outputs:
             model_output_dict[prompt_idx][key] = outputs[key]

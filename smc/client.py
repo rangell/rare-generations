@@ -53,14 +53,14 @@ class JudgeClient:
         # TODO: if launch_script_path is empty we try using together ai
         # TODO: tensor parallel size in launch script
 
-        busy_gpu_subprocess = subprocess.Popen(
-            ["python", "-u", "misc/run_50xALL.py", "2>&1", "/dev/null"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=1,
-            text=True,
-            start_new_session=True,
-        )
+        # busy_gpu_subprocess = subprocess.Popen(
+        #    ["python", "-u", "misc/run_50xALL.py", "2>&1", "/dev/null"],
+        #    stdout=subprocess.PIPE,
+        #    stderr=subprocess.PIPE,
+        #    bufsize=1,
+        #    text=True,
+        #    start_new_session=True,
+        # )
 
         command = ["sh", self.launch_script_path]
 
@@ -120,11 +120,10 @@ class JudgeClient:
             base_url=f"http://{ip_address}:8000/v1", api_key="sk-no-key-required"
         )
 
-        busy_gpu_subprocess.terminate()
-        busy_gpu_subprocess.wait()
+        # busy_gpu_subprocess.terminate()
+        # busy_gpu_subprocess.wait()
 
         return client
-        pass
 
     def exit_body(self, exc_type, exc_value, traceback) -> bool | None:
         # Stop reading from the output stream of the judge server
