@@ -90,10 +90,10 @@ class PersonaEstimator(HarmfulTraitEstimator):
                     for response in responses
                 ]
             )
-            # _scores = [s if s is not None else 0.0 for s in _scores]
+            _scores = [s if s is not None else 0.0 for s in _scores]
             judge_scores[metric_name] = torch.tensor(_scores)
 
-        custom_print(judge_scores)
+        # custom_print(judge_scores)
         return (
             (judge_scores["coherence"] >= 50) & (judge_scores[self.args.trait] >= 50)
         ).to(float)
@@ -202,10 +202,10 @@ def main(args, judge_client):
         # steering_coef_arr = list(
         #     np.array([-0.25, -0.125, 0, 0.125, 0.25]) + args.steering_coef
         # )
-        # steering_coef_arr = list(np.array([-0.125, 0, 0.125]) + args.steering_coef)
-        steering_coef_arr = list(np.array([0]) + args.steering_coef)
-        # steering_layer_arr = np.array([-0.05, 0, 0.05]) * model.config.num_hidden_layers
-        steering_layer_arr = np.array([0]) * model.config.num_hidden_layers
+        steering_coef_arr = list(np.array([-0.125, 0, 0.125]) + args.steering_coef)
+        # steering_coef_arr = list(np.array([0]) + args.steering_coef)
+        steering_layer_arr = np.array([-0.05, 0, 0.05]) * model.config.num_hidden_layers
+        # steering_layer_arr = np.array([0]) * model.config.num_hidden_layers
         steering_layer_arr += args.steering_layer
         steering_layer_arr = steering_layer_arr.astype(int)
 
@@ -397,7 +397,7 @@ def add_arguments(parser):
     parser.add_argument(
         "--steering_type",
         type=str,
-        default="response",
+        default="all",  # "response" doesn't currently work well with CEM
         help="Which tokens to steer with the steering vector for the proposal model",
     )
 

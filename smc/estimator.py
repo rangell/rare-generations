@@ -651,14 +651,8 @@ class HarmfulTraitEstimator(ABC):
         eos_token_mask = full_input_ids[:, prompt_len:] == self.tokenizer.eos_token_id
         eos_token_mask = eos_token_mask.expand(*mixing_logprobs.shape)
 
-        from IPython import embed
-
-        embed()
-        exit()
-
         mixing_logprobs[proposal_switch_mask] = base_logprobs[proposal_switch_mask]
         mixing_logprobs[eos_token_mask] = 0.0
-
         mixing_logprobs = mixing_logprobs.sum(dim=-1)
 
         judge_scores = (
@@ -737,7 +731,7 @@ class HarmfulTraitEstimator(ABC):
         base_logprobs = base_logprobs[None, :, start_idx:]
         proposal_logprobs = torch.stack(proposal_logprobs_arr)[:, :, start_idx:]
 
-        num_batches = math.ceil(base_logprobs.shape[1] / self.args.fwd_batch_size)
+        num_batches = 5 * math.ceil(base_logprobs.shape[1] / self.args.fwd_batch_size)
         chunked_base_logprobs = torch.chunk(base_logprobs, chunks=num_batches, dim=1)
         chunked_proposal_logprobs = torch.chunk(
             proposal_logprobs, chunks=num_batches, dim=1
