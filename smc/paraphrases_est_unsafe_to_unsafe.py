@@ -7,6 +7,7 @@ import datetime
 import random
 import time
 import pickle
+from tqdm import tqdm
 
 from datasets import load_dataset
 import numpy as np
@@ -300,14 +301,14 @@ def main(args):
         tokenizer=tokenizer,
         smc_args=smc_args,
     )
-
+    
     if args.use_cem:
         # This will set the args for proposal model hyperparameters
         mc_dataset = load_dataset(
             "json",
             data_files=args.mc_est_dataset,
         )["train"]
-        mc_dataset = mc_dataset.select(range(min(int(args.cem_frac * len(mc_dataset)), 4)))
+        mc_dataset = mc_dataset.select(range(min(int(args.cem_frac * len(mc_dataset)), 5)))
 
         steering_coef_arr = [0.2, 0.3, 0.4, 0.5, 0.7, 0.8, 0.9, 1.0]
         proposal_idx_switch_arr = list(range(0, 151, 5))
@@ -329,13 +330,15 @@ def main(args):
     )["train"]
 
     model_output_dict = {}
-    for prompt_idx, example in enumerate(mc_dataset):
+    mc_dataset = mc_dataset.select(range(args.limit_samples[0], args.limit_samples[1]))
+    
+    for prompt_idx, example in enumerate(tqdm(mc_dataset)):
         model_output_dict[prompt_idx] = {}
         model_output_dict[prompt_idx]["forbidden_prompt"] = example["forbidden_prompt"]
         
         
-        if prompt_idx < args.limit_samples[0] or prompt_idx >= args.limit_samples[1]:
-            continue
+        # if prompt_idx < args.limit_samples[0] or prompt_idx >= args.limit_samples[1]:
+        #     continue
 
         print(
             f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}"
@@ -346,11 +349,9 @@ def main(args):
             model_output_dict[prompt_idx]["original_forbidden_prompt"] = example["original_forbidden_prompt"]
         
         print(f"Monte Carlo harm estimate: {float(np.mean(example['score']))}")
-
+        
         model_output_dict[prompt_idx]["mc_scores"] = example["score"]
         model_output_dict[prompt_idx]["mc_mean"] = np.mean(example["score"])
-        if "original_forbidden_prompt" in example:
-            model_output_dict[prompt_idx]["original_forbidden_prompt"] = example["original_forbidden_prompt"]
 
         _, outputs = estimator.estimate_harmful_trait(
             prompt=example["forbidden_prompt"],
@@ -361,8 +362,6 @@ def main(args):
         )
 
         print("\n-----------------------------------------------\n")
-
-        # import pdb; pdb.set_trace()
         
         for key in outputs:
             model_output_dict[prompt_idx][key] = outputs[key]

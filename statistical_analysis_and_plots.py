@@ -9,32 +9,40 @@ import pandas as pd
 import torch
 
 
-def analyze_results(model_outputs):
+def analyze_results(model_outputs, threshold=None):
 
     arr_mc_scores = []
-    arr_is_scores = []
+    arr_judge_scores = []
+    arr_importance_weights = []
+
+    if threshold is None:
+        threshold = 0.0
 
     for prompt_idx in range(len(model_outputs)):
         outputs = model_outputs[prompt_idx]
         # Perform analysis on outputs
         # print(f"Prompt {prompt_idx}: {outputs.keys()}")
 
+        # if 'mc_mean' not in outputs or 'reweighted_scores' not in outputs:
+        #     import pdb; pdb.set_trace()
+        if "mc_mean" not in outputs:
+            continue
         mc_estimate = outputs["mc_mean"]
         is_estimate = outputs["reweighted_scores"]
 
         mc_scores = np.array(outputs["mc_scores"])
-        is_scores = (
-            np.array(outputs["judge_scores"])
-            * np.array(outputs["importance_weights"])[:, 0]
-        )
+        judge_scores = np.array(outputs["judge_scores"])
+        importance_weights = np.array(outputs["importance_weights"])
 
         arr_mc_scores.append(mc_scores)
-        arr_is_scores.append(is_scores)
+        arr_judge_scores.append(judge_scores)
+        arr_importance_weights.append(importance_weights)
 
     arr_mc_scores = np.stack(arr_mc_scores, axis=0)
-    arr_is_scores = np.stack(arr_is_scores, axis=0)
+    arr_judge_scores = np.stack(arr_judge_scores, axis=0)
+    arr_importance_weights = np.stack(arr_importance_weights, axis=0)
 
-    return arr_mc_scores, arr_is_scores
+    return arr_mc_scores, arr_judge_scores, arr_importance_weights
 
 
 # dict_keys(['forbidden_prompt', 'mc_scores', 'mc_mean', 'responses', '_input_ids', '_completion_ids', 'judge_scores', 'prompt_kl', 'importance_weights', 'reweighted_scores'])
@@ -42,10 +50,17 @@ def get_cheap_model_output(model_outputs):
     cheap_model_output = []
     for prompt_idx in range(len(model_outputs)):
         cheap_output_dict = {}
+
+        if (
+            "mc_mean" not in model_outputs[prompt_idx]
+            or "reweighted_scores" not in model_outputs[prompt_idx]
+        ):
+            continue
+
         cheap_output_dict["forbidden_prompt"] = model_outputs[prompt_idx][
             "forbidden_prompt"
         ]
-        if 'original_forbidden_prompt' in model_outputs[prompt_idx]:
+        if "original_forbidden_prompt" in model_outputs[prompt_idx]:
             cheap_output_dict["original_forbidden_prompt"] = model_outputs[prompt_idx][
                 "original_forbidden_prompt"
             ]
@@ -85,7 +100,12 @@ def get_effective_sample_size(weights):
     return ess
 
 
-def get_data(data_path, save_cheap_model_output=False, skip_model_name=None, min_sample_size=None):
+def get_data(
+    data_path,
+    save_cheap_model_output=False,
+    model_name_to_load=None,
+    min_sample_size=None,
+):
     experiment_dir = Path(data_path)
     arr_models = os.listdir(experiment_dir)
 
@@ -106,14 +126,15 @@ def get_data(data_path, save_cheap_model_output=False, skip_model_name=None, min
     del llama_greedy_mc_estimate
 
     dict_mc_scores = {}
-    dict_is_scores = {}
+    dict_judge_scores = {}
+    dict_importance_weights = {}
 
     dict_cem_outputs = {}
 
     all_outputs = {}
     for model in arr_models:
-        
-        if skip_model_name is not None and skip_model_name in model:
+
+        if model_name_to_load is not None and model_name_to_load not in model:
             continue
         model_dir = experiment_dir / model
 
@@ -154,48 +175,79 @@ def get_data(data_path, save_cheap_model_output=False, skip_model_name=None, min
             # print(f"Metadata: {metadata}")
             # print(f"Length of Model Outputs: {len(model_outputs.keys())}")
 
-            mc_scores, is_scores = analyze_results(model_outputs)
+            # try:
+            #     len(model_outputs[0]["mc_scores"])
+            #     model_outputs[19]["mc_mean"]
+            # except KeyError:
+            #     # import pdb; pdb.set_trace()
+            #     print(
+            #         "----> KeyError when trying to access mc_scores or mc_mean. This likely means the model outputs are incomplete or corrupted. Skipping this model output to avoid out of memory issues during analysis."
+            #     )
+            #     print("model outputs", os.system(f"du -sh {model_outputs_path}"))
+            #     print("cem", os.system(f"du -sh {cem_outputs_path}"))
+            #     # print(os.system(f"du -sh {experiment_path}"))
+            #     print("--" * 40)
+            #     import pdb; pdb.set_trace()
+            #     continue
+
+            mc_scores, judge_scores, importance_weights = analyze_results(model_outputs)
             model_str = f"{model}_{metadata['num_particles']}_{metadata['seed']}"
-                        
-            if min_sample_size is not None and is_scores.shape[0] < min_sample_size:
-                print(f"Skipping {model_str} because it has less than {min_sample_size} samples.")
+
+            if min_sample_size is not None and judge_scores.shape[0] < min_sample_size:
+                print(
+                    f"Skipping {model_str} because it has less than {min_sample_size} samples."
+                )
                 continue
-            
-            print('Not outptutting model responses and completion ids to save memory since we only need the scores for analysis.')            
+
+            print(
+                "Not outptutting model responses and completion ids to save memory since we only need the scores for analysis."
+            )
             for _idx in range(len(model_outputs)):
-                model_outputs[_idx]['responses'] = None
-                model_outputs[_idx]['_completion_ids'] = None
-        
+                model_outputs[_idx]["responses"] = None
+                model_outputs[_idx]["_completion_ids"] = None
+
             if metadata["use_cem"] is False:
-                model_str += f"_no_cem_{metadata['ablation_intensity']}"                        
-                
+                model_str += f"_no_cem_{metadata['ablation_intensity']}"
+
                 dict_mc_scores[model_str] = None
                 for _idx in range(len(model_outputs)):
-                    model_outputs[_idx]['responses'] = None
-                    model_outputs[_idx]['_completion_ids'] = None
+                    model_outputs[_idx]["responses"] = None
+                    model_outputs[_idx]["_completion_ids"] = None
                 # import pdb; pdb.set_trace()
 
+            if (
+                "limit_samples" in metadata
+                and metadata["limit_samples"] is not None
+                and isinstance(metadata["limit_samples"], list)
+            ):
+                print(f"Including Limit Samples: {metadata['limit_samples']}")
+                model_str += f"_limit_{metadata['limit_samples'][0]}_{metadata['limit_samples'][1]}"
+
             mc_scores = torch.tensor(mc_scores)
-            is_scores = torch.tensor(is_scores)
+            judge_scores = torch.tensor(judge_scores)
+            importance_weights = torch.tensor(importance_weights)
+
             dict_mc_scores[model_str] = mc_scores
-            dict_is_scores[model_str] = is_scores
+            dict_judge_scores[model_str] = judge_scores
+            dict_importance_weights[model_str] = importance_weights
 
             print(
-                f"MC Scores Shape: {mc_scores.shape}, IS Scores Shape: {is_scores.shape}"
+                f"MC Scores Shape: {mc_scores.shape}, IS Scores Shape: {judge_scores.shape}"
             )
-            print(f"CEM {metadata['use_cem']}, Ablation {metadata['ablation_intensity']}, Num Particles {metadata['num_particles']}, Seed {metadata['seed']}")
             print(
-                "Variance: ",
-                ((mc_scores.mean(axis=1) - is_scores.mean(axis=1)) ** 2).mean(),
+                f"CEM {metadata['use_cem']}, Ablation {metadata['ablation_intensity']}, Num Particles {metadata['num_particles']}, Seed {metadata['seed']}"
             )
+            # print(
+            #     "Variance: ",
+            #     ((mc_scores.mean(axis=1) - judge_scores.mean(axis=1)) ** 2).mean(),
+            # )
             print("MC Mean: ", mc_scores.mean())
-            print("IS Mean: ", is_scores.mean())
-
+            # print("IS Mean: ", judge_scores.mean())
             del mc_scores
-            del is_scores
+            del judge_scores
+            del importance_weights
 
             dict_cem_outputs[model_str] = cem_outputs
-
             all_outputs[model_str] = model_outputs
 
             # del model_outputs
@@ -251,7 +303,8 @@ def get_data(data_path, save_cheap_model_output=False, skip_model_name=None, min
 
     return (
         dict_mc_scores,
-        dict_is_scores,
+        dict_judge_scores,
+        dict_importance_weights,
         prompt_category_index,
         all_outputs,
         dict_cem_outputs,
@@ -259,12 +312,21 @@ def get_data(data_path, save_cheap_model_output=False, skip_model_name=None, min
 
 
 if __name__ == "__main__":
-    # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data(
-    #     "icml_unsafe_analysis_copy/", save_cheap_model_output=True
+    # (
+    #     dict_mc_scores,
+    #     dict_judge_scores,
+    #     dict_importance_weights,
+    #     prompt_category_index,
+    #     all_outputs,
+    #     _,
+    # ) = get_data(
+    #     "icml_unsafe_seed_45/",
+    #     save_cheap_model_output=True,
+    #     min_sample_size=313,
     # )
-    
+
     dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data(
-        "output_no_cem", save_cheap_model_output=False
+        "output_paraphrases_est_unsafe_to_unsafe/", save_cheap_model_output=True, min_sample_size=1000, model_name_to_load="Llama-3.1-8B-Instruct"
     )
 
     # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs, _ = get_data("output_paraphrases_est_unsafe_to_unsafe/", save_cheap_model_output=True)
@@ -274,7 +336,8 @@ if __name__ == "__main__":
     # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data("output_paraphrases_est_unsafe_to_unsafe_copy/", save_cheap_model_output=True)
     # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data("output_llama_2/", save_cheap_model_output=True)
     # dict_mc_scores, dict_is_scores, prompt_category_index, all_outputs = get_data("output_llama_2/", save_cheap_model_output=True)
-# from IPython import embed
 
-# embed()
-# exit()
+    # from IPython import embed
+
+    # embed()
+    # exit()

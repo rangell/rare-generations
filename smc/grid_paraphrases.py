@@ -11,15 +11,15 @@ from tqdm import tqdm
 def create_grid():
     n_paraphrases = 25
     grid = {
-        "output_dir": "output_paraphrases_est_unsafe_to_unsafe",
+        "output_dir": "output_paraphrases_est_unsafe_to_unsafe_try_3",
         # "output_dir": "icml_unsafe_seed_44",
         "model_name": [
             # "meta-llama/llama-2-7b-chat-hf",
+            # "Qwen/Qwen2.5-7B-Instruct",
             "meta-llama/Llama-3.1-8B-Instruct",
-            "microsoft/phi-4",
+            # "microsoft/phi-4",
             # "meta-llama/Llama-3.2-1B-Instruct",
-            # "allenai/Olmo-3-7B-Instruct",
-            "Qwen/Qwen2.5-7B-Instruct",
+            # "allenai/Olmo-3-7B-Instruct",            
             # "google/gemma-2-9b-it",
             # "Qwen/Qwen2.5-32B-Instruct",
         ],
