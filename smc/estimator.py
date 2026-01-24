@@ -588,7 +588,7 @@ class HarmfulTraitEstimator(ABC):
         Batches forward pass for next token prediction when using a large number of particles.
         Adapts to whatever cache type we are using for generation.
         """
-        num_batches = math.ceil(input_ids.shape[0] / self.args.fwd_batch_size)
+        num_batches = 10 * math.ceil(input_ids.shape[0] / self.args.fwd_batch_size)
         chunked_input_ids = torch.chunk(input_ids, chunks=num_batches, dim=0)
         chunked_attention_mask = torch.chunk(attention_mask, chunks=num_batches, dim=0)
 
@@ -731,7 +731,7 @@ class HarmfulTraitEstimator(ABC):
         base_logprobs = base_logprobs[None, :, start_idx:]
         proposal_logprobs = torch.stack(proposal_logprobs_arr)[:, :, start_idx:]
 
-        num_batches = 5 * math.ceil(base_logprobs.shape[1] / self.args.fwd_batch_size)
+        num_batches = 10 * math.ceil(base_logprobs.shape[1] / self.args.fwd_batch_size)
         chunked_base_logprobs = torch.chunk(base_logprobs, chunks=num_batches, dim=1)
         chunked_proposal_logprobs = torch.chunk(
             proposal_logprobs, chunks=num_batches, dim=1
