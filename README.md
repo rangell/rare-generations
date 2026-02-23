@@ -1,7 +1,23 @@
 ##  Setup
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/). Then, run `uv sync` to create the environment.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/). Then run:
 
+```bash
+export SETUPTOOLS_SCM_PRETEND_VERSION=0.13.0
+export VLLM_PRECOMPILED_WHEEL_COMMIT=72506c98349d6bcd32b4e33eec7b5513453c1502
+export VLLM_PRECOMPILED_WHEEL_VARIANT="${VLLM_PRECOMPILED_WHEEL_VARIANT:-cu130}"
+export VLLM_USE_PRECOMPILED=1
+
+uv sync
+
+source .venv/bin/activate
+```
+
+This installs all dependencies and builds the local vllm. If your CUDA version is not cu130, override the variant:
+
+```bash
+VLLM_PRECOMPILED_WHEEL_VARIANT=cu124 ./install.sh
+```
 
 ## Download Monte Carlo Estimates
 

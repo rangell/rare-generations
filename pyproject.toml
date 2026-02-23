@@ -14,14 +14,17 @@ dependencies = [
     "litellm>=1.80.9",
     "matplotlib>=3.10.7",
     "nest-asyncio>=1.6.0",
+    "numpy>=2.2.6",
     "pandas>=2.3.3",
     "peft>=0.18.0",
+    "setuptools-scm>=9.2.2",
     "together>=1.5.31",
     "transformers",
-    "vllm==0.10.2",
+    "vllm",
     "zstandard>=0.25.0",
 ]
 
 [tool.uv.sources]
 transformers = { git = "https://github.com/rangell/transformers", branch = "cache_fix" }
+vllm = { git = "https://github.com/rangell/vllm", branch = "steering" }
 
