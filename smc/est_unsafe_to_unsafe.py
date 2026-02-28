@@ -75,7 +75,7 @@ def run_cem(
     estimator,
     example,
     outputs,
-    steering_coef_arr,
+    steering_params_arr,
     proposal_idx_switch_arr,
     proposal_bias_arr,
 ):
@@ -108,7 +108,7 @@ def run_cem(
         full_input_ids=full_input_ids,
         judge_scores=judge_scores,
         importance_weights=importance_weights,
-        steering_coef_arr=steering_coef_arr,
+        steering_params_arr=steering_params_arr,
         proposal_idx_switch_arr=proposal_idx_switch_arr,
         proposal_bias_arr=proposal_bias_arr,
     )
@@ -117,13 +117,13 @@ def run_cem(
             torch.argmin(cross_entropy_tensor), cross_entropy_tensor.shape
         )
         print(
-            f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}",
+            f"Optimal ablation_intensity: {steering_params_arr[argmin_indices[0]]['ablation_intensity']}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}",
             end="\r\n",
         )
 
         _, _out = estimator.estimate_harmful_trait(
             prompt=example["forbidden_prompt"],
-            steering_coef=steering_coef_arr[argmin_indices[0]],
+            steering_params=steering_params_arr[argmin_indices[0]],
             proposal_idx_switch=proposal_idx_switch_arr[argmin_indices[1]],
             proposal_bias=proposal_bias_arr[argmin_indices[2]],
         )
@@ -155,7 +155,7 @@ def set_proposal_hparams(
     output_dir,
     mc_dataset,
     estimator,
-    steering_coef_arr,
+    steering_params_arr,
     proposal_idx_switch_arr,
     proposal_bias_arr,
 ):
@@ -180,8 +180,8 @@ def set_proposal_hparams(
 
         outputs = {}
 
-        for sub_idx, ablation_intensity in enumerate(args.ablation_intensities):
-            print(f"Ablation intensity: {ablation_intensity}", end="\r\n")
+        for sub_idx, steering_params in enumerate(steering_params_arr):
+            print(f"Ablation intensity: {steering_params['ablation_intensity']}", end="\r\n")
             print(
                 f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}",
                 end="\r\n",
@@ -193,7 +193,7 @@ def set_proposal_hparams(
 
             _, _out = estimator.estimate_harmful_trait(
                 prompt=example["forbidden_prompt"],
-                steering_coef=ablation_intensity,
+                steering_params=steering_params,
             )
 
             print("\n-----------------------------------------------\n", end="\r\n")
@@ -204,7 +204,7 @@ def set_proposal_hparams(
             estimator,
             example,
             outputs,
-            steering_coef_arr,
+            steering_params_arr,
             proposal_idx_switch_arr,
             proposal_bias_arr,
         )
@@ -222,11 +222,11 @@ def set_proposal_hparams(
     argmin_indices = torch.unravel_index(
         torch.argmin(cross_entropy_tensor), cross_entropy_tensor.shape
     )
-    args.ablation_intensity = steering_coef_arr[argmin_indices[0]]
+    args.ablation_intensity = steering_params_arr[argmin_indices[0]]['ablation_intensity']
     args.proposal_idx_switch = proposal_idx_switch_arr[argmin_indices[1]]
     args.proposal_bias = proposal_bias_arr[argmin_indices[2]]
     print(
-        f"Optimal ablation_intensity: {steering_coef_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}",
+        f"Optimal steering params: {steering_params_arr[argmin_indices[0]]}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}",
         end="\r\n",
     )
 
@@ -315,7 +315,12 @@ def main(args):
         )["train"]
         mc_dataset = mc_dataset.select(range(int(args.cem_frac * len(mc_dataset))))
 
-        steering_coef_arr = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        steering_params_arr = [
+            {
+                "ablation_intensity": float(ablation_intensity),
+            }
+            for ablation_intensity in args.ablation_intensities
+        ]
         proposal_idx_switch_arr = list(range(0, 151, 5))
         proposal_bias_arr = np.linspace(0, 1, 25)
         set_proposal_hparams(
@@ -323,7 +328,7 @@ def main(args):
             output_dir,
             mc_dataset,
             estimator,
-            steering_coef_arr,
+            steering_params_arr,
             proposal_idx_switch_arr,
             proposal_bias_arr,
         )
@@ -352,7 +357,7 @@ def main(args):
 
         _, outputs = estimator.estimate_harmful_trait(
             prompt=example["forbidden_prompt"],
-            steering_coef=args.ablation_intensity,
+            steering_params={"ablation_intensity": args.ablation_intensity},
             proposal_idx_switch=args.proposal_idx_switch,
             proposal_bias=args.proposal_bias,
         )

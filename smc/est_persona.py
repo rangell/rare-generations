@@ -66,12 +66,12 @@ class PersonaEstimator(HarmfulTraitEstimator):
         )[self.args.steering_layer]
 
     def proposal_context_manager(
-        self, steering_coef: float, steering_layer: int
+        self, steering_params: dict,
     ) -> ContextManager:
         return ActivationSteerer(
             self.model,
             self.persona_vector,
-            coeff=steering_coef,
+            coeff=steering_params["ablation_intensity"],
             positions=self.args.steering_type,
             layer_idx=steering_layer - 1,
         )
