@@ -9,6 +9,7 @@ from tqdm import tqdm, trange
 import torch
 import torch.distributed as dist
 from transformers import DynamicCache, StaticCache
+from vllm import LLM, SamplingParams
 
 from smc.fk_steering import FKSteering, update_cache_after_resampling
 from smc.utils import custom_print, is_main_process, wait_for_everyone, is_distributed
@@ -77,9 +78,9 @@ class HarmfulTraitEstimator(ABC):
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
 
-        ## Clear cache to avoid OOM errors
-        gc.collect()
-        torch.cuda.empty_cache()
+        ### Clear cache to avoid OOM errors
+        # gc.collect()
+        # torch.cuda.empty_cache()
 
         # reward function for SMC
         # Just past to SMC as r_fn=reward_fn
@@ -110,93 +111,12 @@ class HarmfulTraitEstimator(ABC):
         Batches forward pass for next token prediction when using a large number of particles.
         Adapts to whatever cache type we are using for generation.
         """
-        num_batches = math.ceil(input_ids.shape[0] / self.args.fwd_batch_size)
-        chunked_input_ids = torch.chunk(input_ids, chunks=num_batches, dim=0)
-        chunked_attention_mask = torch.chunk(attention_mask, chunks=num_batches, dim=0)
-
-        if num_batches > 1:
-            # Chunk the cache
-            chunk_indices = torch.arange(input_ids.shape[0]).chunk(num_batches)
-            if past_key_values.layers[0].keys is None:
-                chunked_past_key_values = [
-                    DynamicCache(
-                        config=self.model.config, offloading=self.args.low_vram_cache
-                    )
-                    for _ in range(num_batches)
-                ]
-            else:
-                chunked_past_key_values = []
-                for batch_indices in chunk_indices:
-                    cache = DynamicCache(
-                        config=self.model.config, offloading=self.args.low_vram_cache
-                    )
-                    for layer_idx in range(self.model.config.num_hidden_layers):
-                        cache.layers[layer_idx].keys = past_key_values.layers[
-                            layer_idx
-                        ].keys[batch_indices]
-                        cache.layers[layer_idx].values = past_key_values.layers[
-                            layer_idx
-                        ].values[batch_indices]
-                        cache.layers[layer_idx].is_initialized = True
-                        cache.layers[layer_idx].dtype = past_key_values.layers[
-                            layer_idx
-                        ].dtype
-                        cache.layers[layer_idx].device = past_key_values.layers[
-                            layer_idx
-                        ].device
-                    chunked_past_key_values.append(cache)
-
-            del past_key_values
-        else:
-            chunked_past_key_values = [past_key_values]
-
-        # Batch the forward pass
-        batched_outputs = []
-        for batch_input_ids, batch_attention_mask, batch_past_key_values in zip(
-            chunked_input_ids, chunked_attention_mask, chunked_past_key_values
-        ):
-            _batch_outputs = self.model.forward(
-                batch_input_ids,
-                batch_attention_mask,
-                past_key_values=batch_past_key_values,
-                **kwargs,
-            )
-            _batch_outputs.logits = _batch_outputs.logits[:, -1, :]
-            batched_outputs.append(_batch_outputs)
-
-        # Reassemble the cache
-        if num_batches > 1:
-            past_key_values = DynamicCache(
-                config=self.model.config, offloading=self.args.low_vram_cache
-            )
-            for layer_idx in range(self.model.config.num_hidden_layers):
-                layer_key_cache = torch.cat(
-                    [cache.layers[layer_idx].keys for cache in chunked_past_key_values],
-                    dim=0,
-                )
-                layer_value_cache = torch.cat(
-                    [
-                        cache.layers[layer_idx].values
-                        for cache in chunked_past_key_values
-                    ],
-                    dim=0,
-                )
-                past_key_values.layers[layer_idx].keys = layer_key_cache
-                past_key_values.layers[layer_idx].values = layer_value_cache
-                past_key_values.layers[layer_idx].is_initialized = True
-                past_key_values.layers[layer_idx].dtype = (
-                    chunked_past_key_values[0].layers[layer_idx].dtype
-                )
-                past_key_values.layers[layer_idx].device = (
-                    chunked_past_key_values[0].layers[layer_idx].device
-                )
-
-            for cache in chunked_past_key_values:
-                del cache
-            logits = torch.cat([out.logits for out in batched_outputs], dim=0)
-        else:
-            past_key_values = chunked_past_key_values[0]
-            logits = batched_outputs[0].logits
+        logits = self.model.forward(
+            input_ids,
+            attention_mask,
+            past_key_values=past_key_values,
+            **kwargs,
+        ).logits[:, -1, :]
 
         return logits, past_key_values
 
@@ -212,13 +132,6 @@ class HarmfulTraitEstimator(ABC):
         """Implements rare event estimation using sequential Monte Carlo."""
         assert prompt != ""
 
-        # base_past_key_values = DynamicCache(
-        #    config=self.model.config, offloading=self.args.low_vram_cache
-        # )
-        # proposal_past_key_values = DynamicCache(
-        #    config=self.model.config, offloading=self.args.low_vram_cache
-        # )
-
         base_past_key_values = StaticCache(
             config=self.model.config,
             max_cache_len=input_ids.shape[1] + self.args.max_new_tokens,
@@ -231,21 +144,42 @@ class HarmfulTraitEstimator(ABC):
         )
 
         num_particles = input_ids.shape[0]
+        prompt_len = input_ids.shape[1]
+        max_len = prompt_len + self.args.max_new_tokens
 
-        _input_ids = input_ids.detach().clone()
-        _attention_mask = attention_mask.detach().clone()
+        # Pre-allocate output tensors to avoid O(T²) torch.cat allocations (change 2)
+        _input_ids = torch.full(
+            (num_particles, max_len),
+            self.tokenizer.pad_token_id,
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        _attention_mask = torch.zeros(
+            (num_particles, max_len),
+            dtype=attention_mask.dtype,
+            device=attention_mask.device,
+        )
+        _input_ids[:, :prompt_len] = input_ids
+        _attention_mask[:, :prompt_len] = attention_mask
+
         _completed_generation = torch.zeros((num_particles, 1), dtype=torch.bool).to(
             _input_ids.device
         )
 
-        _inputs = {"input_ids": _input_ids, "attention_mask": _attention_mask}
+        _inputs = {
+            "input_ids": _input_ids[:, :prompt_len],
+            "attention_mask": _attention_mask[:, :prompt_len],
+        }
 
         cache_position = torch.arange(
-            _inputs["input_ids"].shape[1], dtype=torch.int64, device=self.model.device
+            prompt_len, dtype=torch.int64, device=self.model.device
         )
 
         log_importance_weights = torch.zeros(num_particles, 1, device=_input_ids.device)
-        log_importance_weight_arr = []
+        # Pre-allocate importance weight array (change 6)
+        log_importance_weight_arr = torch.zeros(
+            self.args.max_new_tokens, num_particles, 1, device=_input_ids.device
+        )
 
         if proposal_bias is None:
             proposal_bias = torch.rand(
@@ -265,31 +199,9 @@ class HarmfulTraitEstimator(ABC):
                 (num_particles, 1), proposal_idx_switch, device="cuda"
             )
 
-        if self.smc_args is not None:
-            # smc_args["r_fn"] = lambda x: torch.ones(x.shape[0], device=_input_ids.device)
-            fk_class = FKSteering(
-                device=_input_ids.device,
-                r_fn=self.smc_args["r_fn"],
-                potential_type=self.smc_args["potential_type"],
-                max_seq_len=self.smc_args["max_seq_len"],
-                num_particles=self.smc_args["num_particles"],
-                resample_start=self.smc_args["resample_start"],
-                resample_end=self.smc_args["resample_end"],
-                resample_interval=self.smc_args["resample_interval"],
-                lmbda=self.smc_args["lmbda"],
-                use_smc=self.smc_args["use_smc"],
-                adaptive_resampling=self.smc_args["adaptive_resampling"],
-                adaptive_resampling_threshold=self.smc_args[
-                    "adaptive_resampling_threshold"
-                ],
-                smc_verbose=self.smc_args["smc_verbose"],
-                importance_resampling_at_last_step=self.smc_args[
-                    "importance_resampling_at_last_step"
-                ],
-                use_importance_weights_in_resampling=self.smc_args[
-                    "use_importance_weights_in_resampling"
-                ],
-            )
+        # Pre-compute log biases for numerically stable mixing (change 3)
+        log_bias = torch.log(proposal_bias.float()).to(proposal_bias.dtype)
+        log_1m_bias = torch.log1p(-proposal_bias.float()).to(proposal_bias.dtype)
 
         # Main generation loop
         for generation_idx in trange(self.args.max_new_tokens):
@@ -306,6 +218,8 @@ class HarmfulTraitEstimator(ABC):
                     return_dict_in_generate=True,
                     output_hidden_states=False,
                 )
+            # Apply vocab mask before softmax to avoid exp/log round-trip (change 4)
+            base_logits.masked_fill_(~self.vocab_mask[None, :], float("-inf"))
             base_logprobs = torch.log_softmax(base_logits, dim=-1)
 
             # Compute the proposal distribution
@@ -326,12 +240,15 @@ class HarmfulTraitEstimator(ABC):
                         output_hidden_states=False,
                     )
                 )
+            refusal_ablated_logits.masked_fill_(
+                ~self.vocab_mask[None, :], float("-inf")
+            )
             proposal_logprobs = torch.log_softmax(refusal_ablated_logits, dim=-1)
 
-            # Linearly interpolate between distributions
-            proposal_logprobs = torch.log(
-                proposal_bias * torch.exp(proposal_logprobs)
-                + (1 - proposal_bias) * torch.exp(base_logprobs)
+            # Linearly interpolate between distributions (numerically stable, change 3)
+            proposal_logprobs = torch.logaddexp(
+                proposal_logprobs + log_bias,
+                base_logprobs + log_1m_bias,
             )
 
             # Enforce proposal_idx_switch here
@@ -342,7 +259,8 @@ class HarmfulTraitEstimator(ABC):
                 keep_proposal_mask * proposal_logprobs
                 + (1 - keep_proposal_mask) * base_logprobs
             )
-            proposal_probs = proposal_logprobs.exp() * self.vocab_mask[None, :]
+            # vocab_mask already applied before softmax (change 4)
+            proposal_probs = proposal_logprobs.exp()
 
             next_tokens = torch.multinomial(
                 proposal_probs,
@@ -364,111 +282,30 @@ class HarmfulTraitEstimator(ABC):
                 base_next_token_logprobs[_completed_generation]
             )
 
-            assert base_next_token_logprobs.shape == (num_particles, 1), (
-                base_next_token_logprobs.shape,
-                num_particles,
-            )
-            assert proposal_next_token_logprobs.shape == (num_particles, 1), (
-                proposal_next_token_logprobs.shape,
-                num_particles,
-            )
-
             log_importance_weights += (
                 base_next_token_logprobs - proposal_next_token_logprobs
             )
 
-            log_importance_weight_arr.append(
+            # Write into pre-allocated tensor (change 6)
+            log_importance_weight_arr[generation_idx] = (
                 base_next_token_logprobs - proposal_next_token_logprobs
             )
-            assert len(log_importance_weight_arr) == generation_idx + 1, (
-                len(log_importance_weight_arr),
-                generation_idx + 1,
-            )
 
-            # Update input arguments
-            _input_ids = torch.cat((_input_ids, next_tokens), dim=1)
-            _attention_mask = torch.cat(
-                (_attention_mask, torch.ones_like(next_tokens)), dim=1
-            )
-            _inputs = {"input_ids": next_tokens, "attention_mask": _attention_mask}
+            # Update input arguments using pre-allocated slices (change 2)
+            pos = prompt_len + generation_idx
+            _input_ids[:, pos] = next_tokens.squeeze(-1)
+            _attention_mask[:, pos] = 1
+            _inputs = {
+                "input_ids": next_tokens,
+                "attention_mask": _attention_mask[:, : pos + 1],
+            }
             cache_position = (
                 cache_position[-1:] + 1
             )  # add one more position for the next token
 
-            # if self.smc_args is not None and self.smc_args["use_smc"]:
-            #    p_q_t = torch.exp(
-            #        base_next_token_logprobs - proposal_next_token_logprobs
-            #    ).view(-1)
-
-            #    if (
-            #        generation_idx in fk_class.resampling_arr
-            #        and self.smc_args["use_smc"]
-            #    ):
-            #        rs_candidates = self.smc_args["r_fn"](_input_ids)
-            #    else:
-            #        rs_candidates = None
-
-            #    resample_indices = fk_class(
-            #        step_idx=generation_idx,
-            #        importance_weights=copy.deepcopy(p_q_t),
-            #        sequences=copy.deepcopy(_input_ids),
-            #        rs_candidates=copy.deepcopy(rs_candidates),
-            #    )
-
-            #    if (
-            #        not (resample_indices.cpu() == torch.arange(num_particles))
-            #        .all()
-            #        .item()
-            #    ):
-            #        base_past_key_values = update_cache_after_resampling(
-            #            past_key_values=base_past_key_values,
-            #            indices=resample_indices,
-            #            model_config=self.model.config,
-            #        )
-
-            #    if (
-            #        generation_idx in fk_class.resampling_arr
-            #        and not torch.all(
-            #            resample_indices
-            #            == torch.arange(num_particles, device=resample_indices.device)
-            #        ).item()
-            #    ):
-            #        custom_print(f"Resampling at step {generation_idx}")
-            #        # import pdb; pdb.set_trace()
-            #        assert resample_indices.shape == (num_particles,), (
-            #            resample_indices.shape,
-            #            (num_particles,),
-            #        )
-
-            #        _input_ids = copy.deepcopy(_input_ids[resample_indices])
-            #        _attention_mask = copy.deepcopy(_attention_mask[resample_indices])
-            #        _inputs = {
-            #            "input_ids": next_tokens[resample_indices],
-            #            "attention_mask": _attention_mask,
-            #        }
-
-            #        _completed_generation = copy.deepcopy(
-            #            _completed_generation[resample_indices]
-            #        )
-            #        log_importance_weights = copy.deepcopy(
-            #            log_importance_weights[resample_indices]
-            #        )
-
-            #        log_importance_weight_arr = [
-            #            log_arr[resample_indices, :]
-            #            for log_arr in log_importance_weight_arr
-            #        ]
-
-            #        base_past_key_values = update_cache_after_resampling(
-            #            past_key_values=base_past_key_values,
-            #            indices=resample_indices,
-            #            model_config=self.model.config,
-            #        )
-            #        proposal_past_key_values = update_cache_after_resampling(
-            #            past_key_values=proposal_past_key_values,
-            #            indices=resample_indices,
-            #            model_config=self.model.config,
-            #        )
+            ## Early exit when all sequences have completed (change 5)
+            # if _completed_generation.all():
+            #    break
 
             ### END OF GENERATION LOOP
 

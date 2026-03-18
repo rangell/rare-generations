@@ -19,12 +19,8 @@ dependencies = [
     "peft>=0.18.0",
     "setuptools-scm>=9.2.2",
     "together>=1.5.31",
-    "transformers",
-    "vllm",
+    "torch>=2.10.0",
+    "transformers>=4.57.3",
+    "vllm>=0.17.1",
     "zstandard>=0.25.0",
 ]
-
-[tool.uv.sources]
-transformers = { git = "https://github.com/rangell/transformers", branch = "cache_fix" }
-vllm = { git = "https://github.com/rangell/vllm", branch = "steering" }
-

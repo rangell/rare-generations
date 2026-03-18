@@ -5,12 +5,12 @@ import weakref
 import torch
 from torch import Tensor
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
-
 from transformers import (
     AutoConfig,
     AutoTokenizer,
     AutoModelForCausalLM,
 )
+
 from refusal_direction.pipeline.utils.hook_utils import (
     get_direction_ablation_input_pre_hook,
     get_direction_ablation_output_hook,
@@ -29,6 +29,7 @@ def load_model_and_tokenizer(model_name_or_path):
         config = None
 
     if is_distributed():
+        assert False
         model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             dtype=torch.bfloat16,
@@ -48,6 +49,7 @@ def load_model_and_tokenizer(model_name_or_path):
             token=os.getenv("HF_TOKEN"),
             config=config,
             trust_remote_code=True,
+            attn_implementation="flash_attention_2",
         ).eval()
 
     tokenizer = AutoTokenizer.from_pretrained(

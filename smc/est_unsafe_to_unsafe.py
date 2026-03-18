@@ -1,26 +1,28 @@
-from typing import List, ContextManager, Callable
 import argparse
-import json
-from pathlib import Path
-import os
+import asyncio
 import datetime
+import json
+import os
+import pickle
 import random
 import time
-import pickle
+from pathlib import Path
+from typing import Callable, ContextManager, List, Optional
 
 from datasets import load_dataset
 import numpy as np
 import torch
+from vllm import LLM
+from vllm import SamplingParams
 
 from refusal_direction.pipeline.utils.hook_utils import add_hooks
-
+from smc.estimator import HarmfulTraitEstimator
 from smc.model_utils import (
+    get_all_direction_ablation_hooks,
     load_model_and_tokenizer,
     load_refusal_direction,
-    get_all_direction_ablation_hooks,
 )
 from smc.rewards import _sr_harmful_reward_fn
-from smc.estimator import HarmfulTraitEstimator
 
 
 class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
@@ -181,7 +183,10 @@ def set_proposal_hparams(
         outputs = {}
 
         for sub_idx, steering_params in enumerate(steering_params_arr):
-            print(f"Ablation intensity: {steering_params['ablation_intensity']}", end="\r\n")
+            print(
+                f"Ablation intensity: {steering_params['ablation_intensity']}",
+                end="\r\n",
+            )
             print(
                 f"Forbidden prompt ({prompt_idx}/{len(mc_dataset) - 1}): {example['forbidden_prompt']}",
                 end="\r\n",
@@ -222,7 +227,9 @@ def set_proposal_hparams(
     argmin_indices = torch.unravel_index(
         torch.argmin(cross_entropy_tensor), cross_entropy_tensor.shape
     )
-    args.ablation_intensity = steering_params_arr[argmin_indices[0]]['ablation_intensity']
+    args.ablation_intensity = steering_params_arr[argmin_indices[0]][
+        "ablation_intensity"
+    ]
     args.proposal_idx_switch = proposal_idx_switch_arr[argmin_indices[1]]
     args.proposal_bias = proposal_bias_arr[argmin_indices[2]]
     print(
@@ -231,13 +238,13 @@ def set_proposal_hparams(
     )
 
 
-def main(args):    
-    
+def main(args):
+
     args.model_shortname = args.model_name.split("/")[1]
     args.refusal_direction_path = (
         f"refusal_direction/pipeline/runs/{args.model_shortname}/"
-    )        
-    
+    )
+
     if args.mc_est_dataset == "":
         args.mc_est_dataset = f"monte_carlo_estimates/results/strong_reject/{args.model_shortname}_mc_est_10k.json"
 
@@ -282,29 +289,19 @@ def main(args):
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(args.model_name)
 
-    smc_args = dict(
-        device=model.device,
-        r_fn=None,
-        potential_type="diff",
-        max_seq_len=args.max_new_tokens,
-        num_particles=args.num_particles,
-        resample_start=20,
-        resample_end=args.max_new_tokens - 20,
-        resample_interval=20,
-        lmbda=5.0,
-        use_smc=args.use_smc,  # TODO WARNING TODO false by default
-        adaptive_resampling=True,
-        adaptive_resampling_threshold=0.5,
-        smc_verbose=args.smc_verbose,
-        importance_resampling_at_last_step=False,
-        use_importance_weights_in_resampling=args.use_importance_weights_in_resampling,
-    )
+    mc_dataset = load_dataset(
+        "json",
+        data_files=args.mc_est_dataset,
+    )["train"]
+    mc_dataset = mc_dataset.select(range(int(args.cem_frac * len(mc_dataset))))
+
+    example = mc_dataset[0]
 
     estimator = UnsafeToUnsafeEstimator(
         args=args,
         model=model,
         tokenizer=tokenizer,
-        smc_args=smc_args,
+        smc_args=None,
     )
 
     if args.use_cem:
