@@ -1,18 +1,12 @@
 from abc import ABC, abstractmethod
 
-import copy
 import gc
 import math
 from typing import List, Optional, Callable, ContextManager, Dict
 from tqdm import tqdm, trange
 
 import torch
-import torch.distributed as dist
-from transformers import DynamicCache, StaticCache
-from vllm import LLM, SamplingParams
-
-from smc.fk_steering import FKSteering, update_cache_after_resampling
-from smc.utils import custom_print, is_main_process, wait_for_everyone, is_distributed
+from transformers import StaticCache
 
 
 class HarmfulTraitEstimator(ABC):
@@ -95,7 +89,7 @@ class HarmfulTraitEstimator(ABC):
             proposal_bias=proposal_bias,
             prompt=prompt,
         )
-        custom_print("\n-----------------------------------------------\n")
+        print("\n-----------------------------------------------\n")
 
         harm_est = outputs["reweighted_scores"]
         return harm_est, outputs
@@ -132,12 +126,8 @@ class HarmfulTraitEstimator(ABC):
         """Implements rare event estimation using sequential Monte Carlo."""
         assert prompt != ""
 
-        base_past_key_values = StaticCache(
-            config=self.model.config,
-            max_cache_len=input_ids.shape[1] + self.args.max_new_tokens,
-            offloading=self.args.low_vram_cache,
-        )
-        proposal_past_key_values = StaticCache(
+        # Single 2N cache: rows [0:N] = base, rows [N:2N] = proposal
+        past_key_values = StaticCache(
             config=self.model.config,
             max_cache_len=input_ids.shape[1] + self.args.max_new_tokens,
             offloading=self.args.low_vram_cache,
@@ -147,7 +137,7 @@ class HarmfulTraitEstimator(ABC):
         prompt_len = input_ids.shape[1]
         max_len = prompt_len + self.args.max_new_tokens
 
-        # Pre-allocate output tensors to avoid O(T²) torch.cat allocations (change 2)
+        # Pre-allocate output tensors for N particles
         _input_ids = torch.full(
             (num_particles, max_len),
             self.tokenizer.pad_token_id,
@@ -166,9 +156,10 @@ class HarmfulTraitEstimator(ABC):
             _input_ids.device
         )
 
+        # Tile prompt for 2N batch: base rows [0:N], proposal rows [N:2N]
         _inputs = {
-            "input_ids": _input_ids[:, :prompt_len],
-            "attention_mask": _attention_mask[:, :prompt_len],
+            "input_ids": input_ids.repeat(2, 1),
+            "attention_mask": attention_mask.repeat(2, 1),
         }
 
         cache_position = torch.arange(
@@ -176,10 +167,7 @@ class HarmfulTraitEstimator(ABC):
         )
 
         log_importance_weights = torch.zeros(num_particles, 1, device=_input_ids.device)
-        # Pre-allocate importance weight array (change 6)
-        log_importance_weight_arr = torch.zeros(
-            self.args.max_new_tokens, num_particles, 1, device=_input_ids.device
-        )
+        log_importance_weight_arr = []
 
         if proposal_bias is None:
             proposal_bias = torch.rand(
@@ -199,118 +187,75 @@ class HarmfulTraitEstimator(ABC):
                 (num_particles, 1), proposal_idx_switch, device="cuda"
             )
 
-        # Pre-compute log biases for numerically stable mixing (change 3)
         log_bias = torch.log(proposal_bias.float()).to(proposal_bias.dtype)
         log_1m_bias = torch.log1p(-proposal_bias.float()).to(proposal_bias.dtype)
 
-        # Main generation loop
-        for generation_idx in trange(self.args.max_new_tokens):
-            # Compute the base distribution
-            with torch.no_grad():
-                base_logits, base_past_key_values = self._model_ntp_wrapper(
+        # Main generation loop: hooks registered once, active for rows [N:2N] only
+        with torch.no_grad(), self.proposal_context_manager(**steering_params):
+            for generation_idx in trange(self.args.max_new_tokens):
+                combined_logits, past_key_values = self._model_ntp_wrapper(
                     **_inputs,
-                    past_key_values=base_past_key_values,
+                    past_key_values=past_key_values,
                     cache_position=cache_position,
-                    use_cache=False,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    output_scores=True,
-                    return_dict_in_generate=True,
+                    use_cache=True,
                     output_hidden_states=False,
                 )
-            # Apply vocab mask before softmax to avoid exp/log round-trip (change 4)
-            base_logits.masked_fill_(~self.vocab_mask[None, :], float("-inf"))
-            base_logprobs = torch.log_softmax(base_logits, dim=-1)
 
-            # Compute the proposal distribution
-            with (
-                torch.no_grad(),
-                self.proposal_context_manager(**steering_params),
-            ):
-                refusal_ablated_logits, proposal_past_key_values = (
-                    self._model_ntp_wrapper(
-                        **_inputs,
-                        past_key_values=proposal_past_key_values,
-                        cache_position=cache_position,
-                        use_cache=True,
-                        eos_token_id=self.tokenizer.eos_token_id,
-                        pad_token_id=self.tokenizer.pad_token_id,
-                        output_scores=True,
-                        return_dict_in_generate=True,
-                        output_hidden_states=False,
-                    )
+                base_logits = combined_logits[:num_particles]
+                refusal_ablated_logits = combined_logits[num_particles:]
+
+                base_logits.masked_fill_(~self.vocab_mask[None, :], float("-inf"))
+                refusal_ablated_logits.masked_fill_(
+                    ~self.vocab_mask[None, :], float("-inf")
                 )
-            refusal_ablated_logits.masked_fill_(
-                ~self.vocab_mask[None, :], float("-inf")
-            )
-            proposal_logprobs = torch.log_softmax(refusal_ablated_logits, dim=-1)
+                base_logprobs = torch.log_softmax(base_logits, dim=-1)
+                proposal_logprobs = torch.log_softmax(refusal_ablated_logits, dim=-1)
 
-            # Linearly interpolate between distributions (numerically stable, change 3)
-            proposal_logprobs = torch.logaddexp(
-                proposal_logprobs + log_bias,
-                base_logprobs + log_1m_bias,
-            )
+                # Linearly interpolate between distributions
+                proposal_logprobs = torch.logaddexp(
+                    proposal_logprobs + log_bias,
+                    base_logprobs + log_1m_bias,
+                )
 
-            # Enforce proposal_idx_switch here
-            keep_proposal_mask = (generation_idx < proposal_idx_switch).type(
-                torch.bfloat16
-            )
-            proposal_logprobs = (
-                keep_proposal_mask * proposal_logprobs
-                + (1 - keep_proposal_mask) * base_logprobs
-            )
-            # vocab_mask already applied before softmax (change 4)
-            proposal_probs = proposal_logprobs.exp()
+                # Enforce proposal_idx_switch
+                keep_proposal_mask = generation_idx < proposal_idx_switch
+                proposal_logprobs = torch.where(
+                    keep_proposal_mask, proposal_logprobs, base_logprobs
+                )
+                proposal_probs = proposal_logprobs.exp()
 
-            next_tokens = torch.multinomial(
-                proposal_probs,
-                num_samples=1,
-            )
+                next_tokens = torch.multinomial(proposal_probs, num_samples=1)
 
-            # Check if sequence is completed
-            _completed_generation |= next_tokens == self.tokenizer.eos_token_id
+                _completed_generation |= next_tokens == self.tokenizer.eos_token_id
+                next_tokens[_completed_generation] = self.tokenizer.pad_token_id
 
-            # Pad completed sequences
-            next_tokens[_completed_generation] = self.tokenizer.pad_token_id
+                proposal_next_token_logprobs = torch.gather(
+                    proposal_logprobs, -1, next_tokens
+                )
+                base_next_token_logprobs = torch.gather(base_logprobs, -1, next_tokens)
+                proposal_next_token_logprobs[_completed_generation] = (
+                    base_next_token_logprobs[_completed_generation]
+                )
 
-            proposal_next_token_logprobs = torch.gather(
-                proposal_logprobs, -1, next_tokens
-            )
+                log_ratio = base_next_token_logprobs - proposal_next_token_logprobs
+                log_importance_weights += log_ratio
+                log_importance_weight_arr.append(log_ratio)
 
-            base_next_token_logprobs = torch.gather(base_logprobs, -1, next_tokens)
-            proposal_next_token_logprobs[_completed_generation] = (
-                base_next_token_logprobs[_completed_generation]
-            )
+                # Update tracking (N particles)
+                pos = prompt_len + generation_idx
+                _input_ids[:, pos] = next_tokens.squeeze(-1)
+                _attention_mask[:, pos] = 1
 
-            log_importance_weights += (
-                base_next_token_logprobs - proposal_next_token_logprobs
-            )
+                # Tile next_tokens for both base and proposal halves
+                _inputs = {
+                    "input_ids": next_tokens.repeat(2, 1),
+                    "attention_mask": _attention_mask[:, : pos + 1].repeat(2, 1),
+                }
+                cache_position = cache_position[-1:] + 1
 
-            # Write into pre-allocated tensor (change 6)
-            log_importance_weight_arr[generation_idx] = (
-                base_next_token_logprobs - proposal_next_token_logprobs
-            )
+                ### END OF GENERATION LOOP
 
-            # Update input arguments using pre-allocated slices (change 2)
-            pos = prompt_len + generation_idx
-            _input_ids[:, pos] = next_tokens.squeeze(-1)
-            _attention_mask[:, pos] = 1
-            _inputs = {
-                "input_ids": next_tokens,
-                "attention_mask": _attention_mask[:, : pos + 1],
-            }
-            cache_position = (
-                cache_position[-1:] + 1
-            )  # add one more position for the next token
-
-            ## Early exit when all sequences have completed (change 5)
-            # if _completed_generation.all():
-            #    break
-
-            ### END OF GENERATION LOOP
-
-        del base_past_key_values
-        del proposal_past_key_values
+        del past_key_values
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -322,47 +267,25 @@ class HarmfulTraitEstimator(ABC):
             for r in _input_ids[:, input_ids.shape[1] :]
         ]
 
-        judge_scores = [None]
-        if is_main_process():
-            judge_scores = [
-                self.judge_responses(prompt, responses).to(input_ids.device)
-            ]
-
-        wait_for_everyone()
-        if is_distributed():
-            dist.broadcast_object_list(judge_scores, src=0, device=input_ids.device)
+        judge_scores = [self.judge_responses(prompt, responses).to(input_ids.device)]
         judge_scores = judge_scores[0].to(input_ids.device)
-        # judge_scores = torch.zeros((num_particles,), device=input_ids.device)
+        ## judge_scores = torch.zeros((num_particles,), device=input_ids.device)
 
-        if self.smc_args is None or self.smc_args["use_smc"] is False:
-            reweighted_scores = judge_scores * importance_weights.squeeze(1)
-            custom_print(f"SIS harm score estimate: {reweighted_scores.mean().item()}")
-            custom_print(f"SIS harm score variance: {reweighted_scores.var().item()}")
-            custom_print(
-                f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
-            )
-            custom_print(f"Judge scores: {judge_scores}")
+        reweighted_scores = judge_scores * importance_weights.squeeze(1)
+        print(f"SIS harm score estimate: {reweighted_scores.mean().item()}")
+        print(f"SIS harm score variance: {reweighted_scores.var().item()}")
+        print(
+            f"final importance weights: {importance_weights.mean(), importance_weights.std()}"
+        )
+        print(f"Judge scores: {judge_scores}")
 
-            prompt_kl = -torch.mean(log_importance_weights).item()
-            custom_print(f"KL divergence: {prompt_kl}")
-        elif self.smc_args["use_smc"]:
-            reweighted_scores = fk_class.compute_fk_estimate(
-                test_function_values=judge_scores, importance_weights=importance_weights
-            )
-            custom_print(f"FK harm score estimate: {reweighted_scores.item()}")
-            smc_quantities = fk_class.get_fk_quantities()
-            sis = importance_weights.view(num_particles) * judge_scores
-            custom_print(f"SIS harm score estimate: {sis.mean().item()}")
-            custom_print(f"Judge scores: {judge_scores}")
-            prompt_kl = -torch.mean(log_importance_weights).item()
-            custom_print(f"KL divergence: {prompt_kl}")
-        else:
-            raise NotImplementedError
+        prompt_kl = -torch.mean(log_importance_weights).item()
+        print(f"KL divergence: {prompt_kl}")
 
-        custom_print(
+        print(
             f"Sequence generated: {self.tokenizer.decode(_input_ids[0], skip_special_tokens=False)}"
         )
-        custom_print(f"Judge score: {judge_scores[0]}")
+        print(f"Judge score: {judge_scores[0]}")
 
         ret = dict(
             responses=[
@@ -376,10 +299,6 @@ class HarmfulTraitEstimator(ABC):
             importance_weights=importance_weights.cpu().numpy(),
             reweighted_scores=reweighted_scores.mean().item(),
         )
-
-        if self.smc_args is not None and self.smc_args["use_smc"]:
-            for key in smc_quantities:
-                ret[key] = smc_quantities[key]
 
         return ret
 
@@ -543,27 +462,25 @@ class HarmfulTraitEstimator(ABC):
             enable_cache=False,
         )
 
-        custom_print("Running CEM!")
-        custom_print(f"steering_params_arr: {steering_params_arr}")
-        custom_print(f"proposal_idx_switch_arr: {proposal_idx_switch_arr}")
-        custom_print(f"proposal_bias_arr: {proposal_bias_arr}")
+        print("Running CEM!")
+        print(f"steering_params_arr: {steering_params_arr}")
+        print(f"proposal_idx_switch_arr: {proposal_idx_switch_arr}")
+        print(f"proposal_bias_arr: {proposal_bias_arr}")
 
-        custom_print("Computing base logprobs...")
+        print("Computing base logprobs...")
         with torch.no_grad():
             base_logprobs = self._model_forward_wrapper(**model_input)
-        custom_print("Done.")
+        print("Done.")
 
-        custom_print(
-            "Computing proposal_logprobs with various steering coefficients..."
-        )
+        print("Computing proposal_logprobs with various steering coefficients...")
         proposal_logprobs_arr = []
         for steering_params in tqdm(steering_params_arr):
             with torch.no_grad(), self.proposal_context_manager(**steering_params):
                 _proposal_logprobs = self._model_forward_wrapper(**model_input)
                 proposal_logprobs_arr.append(_proposal_logprobs)
-        custom_print("Done.")
+        print("Done.")
 
-        custom_print("Computing cross entropy tensor...")
+        print("Computing cross entropy tensor...")
         start_idx = prompt_len - 1
         base_logprobs = base_logprobs[None, :, start_idx:]
         proposal_logprobs = torch.stack(proposal_logprobs_arr)[:, :, start_idx:]
@@ -597,7 +514,7 @@ class HarmfulTraitEstimator(ABC):
             chunked_importance_weights,
         ):
             if batch_judge_scores.mean().item() == 0.0:
-                custom_print("Skipping batch with all zero judge scores.")
+                print("Skipping batch with all zero judge scores.")
                 zero_judge_batches += 1
                 continue
 
@@ -613,10 +530,10 @@ class HarmfulTraitEstimator(ABC):
                 proposal_bias_arr,
             )
 
-        custom_print("Done.")
+        print("Done.")
 
         if zero_judge_batches == len(chunked_judge_scores):
-            custom_print("All batches had zero judge scores. Returning zero tensor.")
+            print("All batches had zero judge scores. Returning zero tensor.")
             return 0
 
         return cross_entropy_tensor

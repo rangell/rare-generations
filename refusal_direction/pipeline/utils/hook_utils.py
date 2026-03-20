@@ -40,51 +40,43 @@ def add_hooks(
 
 
 def get_direction_ablation_input_pre_hook(
-    direction: Tensor, ablation_intensity: float = 1.0
+    direction: Tensor, ablation_intensity: float = 1.0, batch_indices=None
 ):
+    direction_norm = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
+
     def hook_fn(module, input):
-        nonlocal direction
-
-        if isinstance(input, tuple):
-            activation: Float[Tensor, "batch_size seq_len d_model"] = input[0]
-        else:
-            activation: Float[Tensor, "batch_size seq_len d_model"] = input
-
-        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-        direction = direction.to(activation)
-        activation -= (
-            ablation_intensity * (activation @ direction).unsqueeze(-1) * direction
+        activation: Float[Tensor, "batch_size seq_len d_model"] = (
+            input[0] if isinstance(input, tuple) else input
         )
 
-        if isinstance(input, tuple):
-            return (activation, *input[1:])
-        else:
-            return activation
+        rows = batch_indices if batch_indices is not None else slice(None)
+        d = direction_norm.to(activation)
+        activation[rows] -= (
+            ablation_intensity * (activation[rows] @ d).unsqueeze(-1) * d
+        )
+
+        return (activation, *input[1:]) if isinstance(input, tuple) else activation
 
     return hook_fn
 
 
 def get_direction_ablation_output_hook(
-    direction: Tensor, ablation_intensity: float = 1.0
+    direction: Tensor, ablation_intensity: float = 1.0, batch_indices=None
 ):
+    direction_norm = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
+
     def hook_fn(module, input, output):
-        nonlocal direction
-
-        if isinstance(output, tuple):
-            activation: Float[Tensor, "batch_size seq_len d_model"] = output[0]
-        else:
-            activation: Float[Tensor, "batch_size seq_len d_model"] = output
-
-        direction = direction / (direction.norm(dim=-1, keepdim=True) + 1e-8)
-        direction = direction.to(activation)
-        activation -= (
-            ablation_intensity * (activation @ direction).unsqueeze(-1) * direction
+        activation: Float[Tensor, "batch_size seq_len d_model"] = (
+            output[0] if isinstance(output, tuple) else output
         )
 
-        if isinstance(output, tuple):
-            return (activation, *output[1:])
-        else:
-            return activation
+        rows = batch_indices if batch_indices is not None else slice(None)
+        d = direction_norm.to(activation)
+        activation[rows] -= (
+            ablation_intensity * (activation[rows] @ d).unsqueeze(-1) * d
+        )
+
+        return (activation, *output[1:]) if isinstance(output, tuple) else activation
 
     return hook_fn
 

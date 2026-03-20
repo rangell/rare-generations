@@ -43,6 +43,7 @@ class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
                 model,
                 refusal_direction["direction"],
                 ablation_intensity=ablation_intensity,
+                batch_indices=slice(args.num_particles, 2 * args.num_particles),
             )
 
     def proposal_context_manager(self, ablation_intensity: float) -> ContextManager:

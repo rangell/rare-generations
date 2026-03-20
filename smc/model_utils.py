@@ -49,7 +49,7 @@ def load_model_and_tokenizer(model_name_or_path):
             token=os.getenv("HF_TOKEN"),
             config=config,
             trust_remote_code=True,
-            attn_implementation="flash_attention_2",
+            attn_implementation="sdpa",
         ).eval()
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -83,6 +83,7 @@ def get_all_direction_ablation_hooks(
     model,
     direction: Tensor,
     ablation_intensity: float = 1.0,
+    batch_indices=None,
 ):
     model_block_modules = weakref.proxy(model.model.layers)
     model_attn_modules = torch.nn.ModuleList(
@@ -96,7 +97,9 @@ def get_all_direction_ablation_hooks(
         (
             model_block_modules[layer],
             get_direction_ablation_input_pre_hook(
-                direction=direction, ablation_intensity=ablation_intensity
+                direction=direction,
+                ablation_intensity=ablation_intensity,
+                batch_indices=batch_indices,
             ),
         )
         for layer in range(model.config.num_hidden_layers)
@@ -105,7 +108,9 @@ def get_all_direction_ablation_hooks(
         (
             model_attn_modules[layer],
             get_direction_ablation_output_hook(
-                direction=direction, ablation_intensity=ablation_intensity
+                direction=direction,
+                ablation_intensity=ablation_intensity,
+                batch_indices=batch_indices,
             ),
         )
         for layer in range(model.config.num_hidden_layers)
@@ -114,7 +119,9 @@ def get_all_direction_ablation_hooks(
         (
             model_mlp_modules[layer],
             get_direction_ablation_output_hook(
-                direction=direction, ablation_intensity=ablation_intensity
+                direction=direction,
+                ablation_intensity=ablation_intensity,
+                batch_indices=batch_indices,
             ),
         )
         for layer in range(model.config.num_hidden_layers)
