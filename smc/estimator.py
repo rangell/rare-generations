@@ -72,14 +72,6 @@ class HarmfulTraitEstimator(ABC):
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
 
-        ### Clear cache to avoid OOM errors
-        # gc.collect()
-        # torch.cuda.empty_cache()
-
-        # reward function for SMC
-        # Just past to SMC as r_fn=reward_fn
-        if self.smc_args is not None and self.smc_args["use_smc"]:
-            self.smc_args["r_fn"] = self.create_reward_function(prompt)
         # Generate
         outputs = self._generate(
             input_ids=input_ids,
@@ -93,26 +85,6 @@ class HarmfulTraitEstimator(ABC):
 
         harm_est = outputs["reweighted_scores"]
         return harm_est, outputs
-
-    def _model_ntp_wrapper(
-        self,
-        input_ids,
-        attention_mask,
-        past_key_values,
-        **kwargs,
-    ):
-        """
-        Batches forward pass for next token prediction when using a large number of particles.
-        Adapts to whatever cache type we are using for generation.
-        """
-        logits = self.model.forward(
-            input_ids,
-            attention_mask,
-            past_key_values=past_key_values,
-            **kwargs,
-        ).logits[:, -1, :]
-
-        return logits, past_key_values
 
     def _generate(
         self,
@@ -167,7 +139,6 @@ class HarmfulTraitEstimator(ABC):
         )
 
         log_importance_weights = torch.zeros(num_particles, 1, device=_input_ids.device)
-        log_importance_weight_arr = []
 
         if proposal_bias is None:
             proposal_bias = torch.rand(
@@ -193,13 +164,13 @@ class HarmfulTraitEstimator(ABC):
         # Main generation loop: hooks registered once, active for rows [N:2N] only
         with torch.no_grad(), self.proposal_context_manager(**steering_params):
             for generation_idx in trange(self.args.max_new_tokens):
-                combined_logits, past_key_values = self._model_ntp_wrapper(
+                combined_logits = self.model.forward(
                     **_inputs,
                     past_key_values=past_key_values,
                     cache_position=cache_position,
                     use_cache=True,
                     output_hidden_states=False,
-                )
+                ).logits[:, -1, :]
 
                 base_logits = combined_logits[:num_particles]
                 refusal_ablated_logits = combined_logits[num_particles:]
@@ -237,9 +208,9 @@ class HarmfulTraitEstimator(ABC):
                     base_next_token_logprobs[_completed_generation]
                 )
 
-                log_ratio = base_next_token_logprobs - proposal_next_token_logprobs
-                log_importance_weights += log_ratio
-                log_importance_weight_arr.append(log_ratio)
+                log_importance_weights += (
+                    base_next_token_logprobs - proposal_next_token_logprobs
+                )
 
                 # Update tracking (N particles)
                 pos = prompt_len + generation_idx
@@ -253,8 +224,6 @@ class HarmfulTraitEstimator(ABC):
                 }
                 cache_position = cache_position[-1:] + 1
 
-                ### END OF GENERATION LOOP
-
         del past_key_values
         gc.collect()
         torch.cuda.empty_cache()
@@ -266,10 +235,7 @@ class HarmfulTraitEstimator(ABC):
             self.tokenizer.decode(r, skip_special_tokens=True)
             for r in _input_ids[:, input_ids.shape[1] :]
         ]
-
-        judge_scores = [self.judge_responses(prompt, responses).to(input_ids.device)]
-        judge_scores = judge_scores[0].to(input_ids.device)
-        ## judge_scores = torch.zeros((num_particles,), device=input_ids.device)
+        judge_scores = self.judge_responses(prompt, responses).to(input_ids.device)
 
         reweighted_scores = judge_scores * importance_weights.squeeze(1)
         print(f"SIS harm score estimate: {reweighted_scores.mean().item()}")
@@ -288,10 +254,7 @@ class HarmfulTraitEstimator(ABC):
         print(f"Judge score: {judge_scores[0]}")
 
         ret = dict(
-            responses=[
-                self.tokenizer.decode(r, skip_special_tokens=True)
-                for r in _input_ids[:, input_ids.shape[1] :]
-            ],
+            responses=responses,
             _input_ids=_input_ids.cpu().numpy().tolist(),
             _completion_ids=_input_ids[:, input_ids.shape[1] :].cpu().numpy().tolist(),
             judge_scores=judge_scores.cpu().numpy(),
@@ -306,7 +269,6 @@ class HarmfulTraitEstimator(ABC):
         self,
         prompt: str,
         importance_weights: torch.Tensor,
-        completions: List[str],
         full_input_ids: Dict[str, torch.Tensor],
         completion_ids: Dict[str, torch.Tensor],
         judge_scores: torch.Tensor,
@@ -367,10 +329,10 @@ class HarmfulTraitEstimator(ABC):
                 batch_input_ids[:, 1:].unsqueeze(-1),
             ).squeeze(-1)
             del _batch_outputs
-            gc.collect()
-            torch.cuda.empty_cache()
-
             batched_logprobs.append(_batch_logprobs)
+
+        gc.collect()
+        torch.cuda.empty_cache()
         return torch.cat(batched_logprobs, dim=0)
 
     def _compute_cross_entropy_tensor(
@@ -381,16 +343,18 @@ class HarmfulTraitEstimator(ABC):
         prompt_len,
         importance_weights,
         judge_scores,
-        steering_params_arr,
         proposal_idx_switch_arr,
         proposal_bias_arr,
     ):
         proposal_biases = torch.from_numpy(proposal_bias_arr).to("cuda")
         proposal_idx_switches = torch.tensor(proposal_idx_switch_arr).to("cuda")
 
-        mixing_logprobs = torch.log(
-            torch.einsum("i,jkl->ijkl", proposal_biases, proposal_logprobs.exp())
-            + torch.einsum("i,jkl->ijkl", 1 - proposal_biases, base_logprobs.exp())
+        # Mix in log-space: log(bias*p + (1-bias)*q) via logaddexp — avoids exp/log round-trips
+        log_bias = torch.log(proposal_biases)[:, None, None, None]  # (B,1,1,1)
+        log_1m_bias = torch.log1p(-proposal_biases)[:, None, None, None]
+        mixing_logprobs = torch.logaddexp(
+            proposal_logprobs + log_bias,
+            base_logprobs + log_1m_bias,
         )[None, :, :, :, :].repeat(proposal_idx_switches.shape[0], 1, 1, 1, 1)
 
         base_logprobs = (
@@ -439,9 +403,7 @@ class HarmfulTraitEstimator(ABC):
         importance_weights,
         judge_scores,
         prompt: str = "",
-        fwd_batch_size: int = 128,
         smc_args=None,
-        low_vram_cache: bool = False,
         steering_params_arr: List[dict] = None,
         proposal_idx_switch_arr: List[int] = None,
         proposal_bias_arr: List[float] = None,
@@ -449,8 +411,6 @@ class HarmfulTraitEstimator(ABC):
         """Implements rare event estimation using sequential Monte Carlo."""
 
         assert prompt != ""
-        # assert decoding == "sample", "Only 'sample' decoding is supported in this function."
-
         assert smc_args is None, "SMC not yet supported in this function."
 
         self.model.eval()
@@ -525,7 +485,6 @@ class HarmfulTraitEstimator(ABC):
                 prompt_len,
                 batch_importance_weights,
                 batch_judge_scores,
-                steering_params_arr,
                 proposal_idx_switch_arr,
                 proposal_bias_arr,
             )
