@@ -18,7 +18,7 @@ model_shortname = 'phi-4'
 
 old_mc = load_dataset(
     "json",
-    data_files=f"/gpfs/data/ranganathlab/singhr36/rare-generations/monte_carlo_estimates/results/strong_reject/{model_shortname}_mc_est_10k.json",
+    data_files=f"/gpfs/data/XXXX/XXXX/rare-generations/monte_carlo_estimates/results/strong_reject/{model_shortname}_mc_est_10k.json",
 )["train"]
 
 

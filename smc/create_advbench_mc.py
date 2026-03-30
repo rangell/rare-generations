@@ -19,7 +19,7 @@ model_shortname = "Llama-3.1-8B-Instruct"
 
 old_mc = load_dataset(
     "json",
-    data_files=f"/gpfs/data/ranganathlab/singhr36/rare-generations/monte_carlo_estimates/results/strong_reject/{model_shortname}_mc_est_10k.json",
+    data_files=f"/gpfs/data/XXXX/XXXX/rare-generations/monte_carlo_estimates/results/strong_reject/{model_shortname}_mc_est_10k.json",
 )["train"]
 
 sample_dict = {'category': None, 'source': None, 'forbidden_prompt': None, 'jailbroken_prompt': None, 'score': [0]}

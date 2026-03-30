@@ -76,7 +76,7 @@ def main(args):
     )
 
     cem_model_output_path = Path(
-      "/gpfs/data/ranganathlab/singhr36/rare-generations/model_output/Llama-3.2-1B-Instruct/20251205_142551"
+      "/gpfs/data/XXXX/XXXX/rare-generations/model_output/Llama-3.2-1B-Instruct/20251205_142551"
     )
 
     cem_model_output_dict = cem_model_output_path / "model_outputs.pkl"
