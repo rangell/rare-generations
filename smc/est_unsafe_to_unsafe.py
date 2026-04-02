@@ -6,6 +6,7 @@ import os
 import pickle
 import random
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, ContextManager, List, Optional
 
@@ -29,24 +30,42 @@ class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
     def __init__(self, args, model, tokenizer, smc_args):
         super().__init__(args, model, tokenizer, smc_args)
 
-        # Load refusal direction for proposal model
-        refusal_direction = load_refusal_direction(args.refusal_direction_path)
-
-        # Construct torch hooks for ablating refusal
-        self.ablation_fwd_pre_hooks = {}
-        self.ablation_fwd_hooks = {}
-        for ablation_intensity in self.args.ablation_intensities:
-            (
-                self.ablation_fwd_pre_hooks[str(ablation_intensity)],
-                self.ablation_fwd_hooks[str(ablation_intensity)],
-            ) = get_all_direction_ablation_hooks(
-                model,
-                refusal_direction["direction"],
-                ablation_intensity=ablation_intensity,
-                batch_indices=slice(args.num_particles, 2 * args.num_particles),
+        if args.lora_path:
+            # Load LoRA adapter, disabled by default
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(
+                self.model, args.lora_path, is_trainable=False
             )
+            self.model.disable_adapter_layers()
+        else:
+            # Load refusal direction for proposal model
+            refusal_direction = load_refusal_direction(args.refusal_direction_path)
 
-    def proposal_context_manager(self, ablation_intensity: float) -> ContextManager:
+            # Construct torch hooks for ablating refusal
+            self.ablation_fwd_pre_hooks = {}
+            self.ablation_fwd_hooks = {}
+            for ablation_intensity in self.args.ablation_intensities:
+                (
+                    self.ablation_fwd_pre_hooks[str(ablation_intensity)],
+                    self.ablation_fwd_hooks[str(ablation_intensity)],
+                ) = get_all_direction_ablation_hooks(
+                    model,
+                    refusal_direction["direction"],
+                    ablation_intensity=ablation_intensity,
+                    batch_indices=slice(args.num_particles, 2 * args.num_particles),
+                )
+
+    @contextmanager
+    def _lora_context_manager(self):
+        self.model.enable_adapter_layers()
+        try:
+            yield
+        finally:
+            self.model.disable_adapter_layers()
+
+    def proposal_context_manager(self, ablation_intensity: float = 1.0) -> ContextManager:
+        if self.args.lora_path:
+            return self._lora_context_manager()
         return add_hooks(
             module_forward_pre_hooks=self.ablation_fwd_pre_hooks[
                 str(ablation_intensity)
@@ -242,9 +261,10 @@ def set_proposal_hparams(
 def main(args):
 
     args.model_shortname = args.model_name.split("/")[1]
-    args.refusal_direction_path = (
-        f"refusal_direction/pipeline/runs/{args.model_shortname}/"
-    )
+    if not args.lora_path:
+        args.refusal_direction_path = (
+            f"refusal_direction/pipeline/runs/{args.model_shortname}/"
+        )
 
     if args.mc_est_dataset == "":
         args.mc_est_dataset = f"monte_carlo_estimates/results/strong_reject/{args.model_shortname}_mc_est_10k.json"
@@ -474,6 +494,13 @@ def add_arguments(parser):
     )
 
     ################### SPECIFIC ARGS #############################
+
+    parser.add_argument(
+        "--lora_path",
+        type=str,
+        default="",
+        help="Path to LoRA adapter directory. If set, uses LoRA as the proposal instead of refusal direction ablation.",
+    )
 
     parser.add_argument(
         "--ablation_intensity",

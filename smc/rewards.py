@@ -34,7 +34,7 @@ def _sr_harmful_reward_fn(forbidden_prompt, responses):
             tensor_parallel_size=torch.cuda.device_count(),
             max_num_seqs=10,
             max_model_len=2048,
-            gpu_memory_utilization=0.4,
+            gpu_memory_utilization=0.2,
             dtype=torch.bfloat16,
             enforce_eager=True,
         )

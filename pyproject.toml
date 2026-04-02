@@ -19,8 +19,9 @@ dependencies = [
     "numpy>=2.2.6",
     "peft>=0.18.0",
     "setuptools-scm>=9.2.2",
-    "transformers",
+    "transformers<5.0.0",
     "trl>=0.29.1",
     "vllm",
+    "pandas<3.0.0",
     "zstandard>=0.25.0",
 ]

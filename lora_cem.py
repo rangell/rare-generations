@@ -208,7 +208,7 @@ def main(script_args, training_args, model_args, dataset_args):
     else:
         raise ValueError("Either `datasets` or `dataset_name` must be provided.")
 
-    dataset = build_cem_dataset("model_output/Llama-3.1-8B-Instruct/20260323_140201/cem_model_outputs.pkl")
+    dataset = build_cem_dataset("model_output/Llama-3.1-8B-Instruct/20260325_164340/model_outputs.pkl")
 
     # Initialize the CEM trainer
     trainer = CEMTrainer(
