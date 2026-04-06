@@ -416,6 +416,12 @@ def add_arguments(parser):
         help="Batch size for forward pass.",
     )
     parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Temperature for sampling.",
+    )
+    parser.add_argument(
         "--proposal_bias",
         type=float,
         default=1.0,

@@ -12,12 +12,12 @@ def create_grid():
     n_paraphrases = 25
     grid = {
         # "output_dir": "output_paraphrases_est_unsafe_to_unsafe",
-        "output_dir": "icml_unsafe_seed_50",
+        "output_dir": "outputs_temperature_experiment",
         "model_name": [
             # "meta-llama/llama-2-7b-chat-hf",
             "meta-llama/Llama-3.1-8B-Instruct",
             "microsoft/phi-4",
-            # "meta-llama/Llama-3.2-1B-Instruct",
+            "meta-llama/Llama-3.2-1B-Instruct",
             "allenai/Olmo-3-7B-Instruct",
             "Qwen/Qwen2.5-7B-Instruct",
             # "google/gemma-2-9b-it",
@@ -25,6 +25,7 @@ def create_grid():
         ],
         "num_particles": [500],
         "seed": 50,
+        "temperature": [0.1, 0.5, 0.7],
         "cem_frac": [0.01],
         # "limit_samples": [
         #     [0 * n_paraphrases, 50 * n_paraphrases],
@@ -95,8 +96,8 @@ if __name__ == "__main__":
     config = generate_args(args.index)
 
     # run importance sampling estimator
-    exp_command = "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run --module smc.est_unsafe_to_unsafe --output_dir {} --model_name {}  --num_particles {} --seed {} --fwd_batch_size 500 --max_new_tokens 150 --use_cem --cem_frac {}"
-    exp_command = exp_command.format(config.output_dir, config.model_name, config.num_particles, config.seed, config.cem_frac)
+    exp_command = "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run --module smc.est_unsafe_to_unsafe --output_dir {} --model_name {}  --num_particles {} --seed {} --fwd_batch_size 500 --max_new_tokens 150 --use_cem --cem_frac {} --temperature {}"
+    exp_command = exp_command.format(config.output_dir, config.model_name, config.num_particles, config.seed, config.cem_frac, config.temperature)
 
     # # run importance sampling estimator with adversarial benchmark prompts
     # exp_command = "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run --module smc.paraphrases_est_unsafe_to_unsafe --output_dir {} --model_name {}  --num_particles {} --seed {} --fwd_batch_size 500 --max_new_tokens 150 --use_cem --mc_est_dataset {}"

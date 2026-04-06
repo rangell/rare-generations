@@ -3,16 +3,28 @@
 *output/
 
 *.jsonl
+output_paraphras*
 
+icml_unsafe_seed*
+icml_unsafe_analysis_never_delete*
+
+ricolog*
 
 __pycache__/
 *.py[cod]
 *$py.class
-icml_unsafe/
+icml_unsafe*
 icml_unsafe_analysis_copy
 cem_dataset/
 greedy_icml_unsafe*
 greedy_icml_unsafe_copy*
+
+old_paraphrased_mc_files
+output_llama_2
+icml_unsafe_seed_44
+output_no_cem
+
+combined_paraphrased_results_with_mc_*
 
 grid_search_unsafe_to_unsafe/
 data_for_reading
