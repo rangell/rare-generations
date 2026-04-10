@@ -24,9 +24,9 @@ class HarmfulTraitEstimator(ABC):
 
         def token_exists(id):
             try:
-                self.tokenizer.decode([id])
-                return 1
-            except TypeError:
+                result = self.tokenizer.decode([id])
+                return int(len(result) > 0)
+            except Exception:
                 return 0
 
         self.vocab_mask = torch.tensor(
