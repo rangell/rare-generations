@@ -24,8 +24,8 @@ from smc.estimator import HarmfulTraitEstimator
 
 
 class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
-    def __init__(self, args, model, tokenizer, smc_args):
-        super().__init__(args, model, tokenizer, smc_args)
+    def __init__(self, args, model, tokenizer):
+        super().__init__(args, model, tokenizer)
 
         # Load refusal direction for proposal model
         refusal_direction = load_refusal_direction(args.refusal_direction_path)
@@ -276,29 +276,10 @@ def main(args):
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(args.model_name)
 
-    smc_args = dict(
-        device=model.device,
-        r_fn=None,
-        potential_type="diff",
-        max_seq_len=args.max_new_tokens,
-        num_particles=args.num_particles,
-        resample_start=20,
-        resample_end=args.max_new_tokens - 20,
-        resample_interval=20,
-        lmbda=5.0,
-        use_smc=args.use_smc,  # TODO WARNING TODO false by default
-        adaptive_resampling=True,
-        adaptive_resampling_threshold=0.5,
-        smc_verbose=args.smc_verbose,
-        importance_resampling_at_last_step=False,
-        use_importance_weights_in_resampling=args.use_importance_weights_in_resampling,
-    )
-
     estimator = UnsafeToUnsafeEstimator(
         args=args,
         model=model,
         tokenizer=tokenizer,
-        smc_args=smc_args,
     )
 
     if args.use_cem:

@@ -7,8 +7,6 @@ import uuid
 from typing import List
 from joblib import Parallel, delayed
 
-from together import Together
-
 from persona_vectors.config import setup_credentials
 
 

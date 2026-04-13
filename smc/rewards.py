@@ -73,3 +73,6 @@ def _sr_harmful_reward_fn(forbidden_prompt, responses):
     scores = torch.tensor([score_map.get(x.outputs[0].text, 0.0) for x in completions])
 
     return scores
+
+if __name__ == "__main__":
+    print(JUDGE_PROMPT_TEMPLATE)

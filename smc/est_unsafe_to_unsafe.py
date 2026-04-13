@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 import datetime
 import json
 import os
@@ -8,13 +7,11 @@ import random
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, ContextManager, List, Optional
+from typing import Callable, ContextManager, List
 
 from datasets import load_dataset
 import numpy as np
 import torch
-from vllm import LLM
-from vllm import SamplingParams
 
 from refusal_direction.pipeline.utils.hook_utils import add_hooks
 from smc.estimator import HarmfulTraitEstimator
@@ -27,8 +24,8 @@ from smc.rewards import _sr_harmful_reward_fn
 
 
 class UnsafeToUnsafeEstimator(HarmfulTraitEstimator):
-    def __init__(self, args, model, tokenizer, smc_args):
-        super().__init__(args, model, tokenizer, smc_args)
+    def __init__(self, args, model, tokenizer):
+        super().__init__(args, model, tokenizer)
 
         if args.lora_path:
             # Load LoRA adapter, disabled by default
@@ -141,13 +138,6 @@ def run_cem(
         print(
             f"Optimal ablation_intensity: {steering_params_arr[argmin_indices[0]]['ablation_intensity']}, Optimal proposal_idx_switch: {proposal_idx_switch_arr[argmin_indices[1]]}, Optimal proposal_bias: {proposal_bias_arr[argmin_indices[2]]}",
             end="\r\n",
-        )
-
-        _, _out = estimator.estimate_harmful_trait(
-            prompt=example["forbidden_prompt"],
-            steering_params=steering_params_arr[argmin_indices[0]],
-            proposal_idx_switch=proposal_idx_switch_arr[argmin_indices[1]],
-            proposal_bias=proposal_bias_arr[argmin_indices[2]],
         )
 
         return cross_entropy_tensor / cross_entropy_tensor.sum()
@@ -310,19 +300,10 @@ def main(args):
     # Load model and tokenizer from huggingface
     model, tokenizer = load_model_and_tokenizer(args.model_name)
 
-    mc_dataset = load_dataset(
-        "json",
-        data_files=args.mc_est_dataset,
-    )["train"]
-    mc_dataset = mc_dataset.select(range(int(args.cem_frac * len(mc_dataset))))
-
-    example = mc_dataset[0]
-
     estimator = UnsafeToUnsafeEstimator(
         args=args,
         model=model,
         tokenizer=tokenizer,
-        smc_args=None,
     )
 
     if args.use_cem:

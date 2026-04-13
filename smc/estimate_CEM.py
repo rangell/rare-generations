@@ -72,7 +72,6 @@ def main(args):
         args=args,
         model=model,
         tokenizer=tokenizer,
-        smc_args=None,
     )
 
     cem_model_output_path = Path(

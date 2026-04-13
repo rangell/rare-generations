@@ -61,5 +61,5 @@ uv run --module smc.est_unsafe_to_unsafe --model_name meta-llama/Llama-3.1-8B-In
 
 ### Estimating persona example
 ```bash
-uv run --module smc.est_persona --model_name meta-llama/Llama-3.1-8B-Instruct --mc_est_dataset monte_carlo_estimates/results/persona_vectors/sycophantic/Llama-3.1-8B-Instruct_mc_est_10k.json --num_particles 100 --fwd_batch_size=100 --proposal_idx_switch 20 --max_new_tokens 1000 --trait sycophantic --steering_type response --steering_coef 2.0 --steering_vector_path persona_vectors/persona_vectors/Llama-3.1-8B-Instruct/sycophantic_response_avg_diff.pt --steering_layer 24
+uv run --module smc.est_persona --model_name meta-llama/Llama-3.1-8B-Instruct --num_particles 100 --fwd_batch_size=100 --max_new_tokens 1000 --trait sycophantic --steering_type response --use_cem
 ```
